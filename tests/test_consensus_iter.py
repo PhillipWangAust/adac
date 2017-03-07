@@ -24,15 +24,19 @@ def bad_resp():
 class ConsensusTest(unittest.TestCase):
 
     @patch('adac.consensus.iterative.transmit', return_value=MagicMock())
-    @patch('adac.consensus.iterative.receive', return_value={ 'local': pickle.dumps(np.zeros((2, 2))), 'local2': pickle.dumps(np.ones((2, 2))) })
+    @patch('adac.consensus.iterative.receive',
+           return_value={'local': pickle.dumps(np.zeros((2, 2))),
+                         'local2': pickle.dumps(np.ones((2, 2)))})
     def test_consensus_test(self, mock2, mock1):
-        a = np.zeros((2, 2))
-        a[0][0] = 14
-        a[0][1] = 17
-        a[1][0] = 8
-        a[1][1] = 35
+        arr = np.zeros((2, 2))
+        arr[0][0] = 14
+        arr[0][1] = 17
+        arr[1][0] = 8
+        arr[1][1] = 35
         comm = Communicator('udp', 12309)
-        r = consensus.run(a, 50, 12, {'local': 1/3, 'local2': 1/3 }, comm)
+        consensus_results = consensus.run(arr, 50, 12, {'local': 1/3, 'local2': 1/3}, comm)
+        is_none = consensus_results is None
+        self.assertNotEqual(is_none, None, 'Should be able to get results')
         comm.close()
 
 
@@ -61,8 +65,8 @@ class ConsensusTest(unittest.TestCase):
 
         w = consensus.get_weights([], 'tests/params_test.conf')
         self.assertEqual(len(w.keys()), 0, "W should be empty.")
-        # self.assertEqual(w['self'], 1, "No neighbors equals weight of 1")
-        
+        # self.assertEqual(weights['self'], 1, "No neighbors equals weight of 1")
+
 
     def test_build_tag(self):
         id = 1

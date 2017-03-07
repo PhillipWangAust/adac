@@ -44,7 +44,7 @@ def get_weights(neighbors, config="params.conf"):
         logging.debug('Degree request URL {}'.format(r_url))
         try:
             res = requests.get(r_url)
-            
+
             if res.status_code == 200:
                 degs[neigh] = int(res.text)
                 weights[neigh] = 1 / (max(degs[neigh], my_deg) + 1)
@@ -56,7 +56,7 @@ def get_weights(neighbors, config="params.conf"):
     return weights
 
 
-def run(orig_data, tc, tag_id, neighbors, communicator, corr_spacing=5):
+def run(orig_data, tc, tag_id, neighbors, communicator):
     '''Run run corrective consensus v.s. a list of nodes in order to converge on an agreed-upon
          average.
 
@@ -66,7 +66,6 @@ def run(orig_data, tc, tag_id, neighbors, communicator, corr_spacing=5):
             tag_id (num): A numbered id for this consensus iteration. Used when sending tag info.abs
             neighbors (dict): an object outlining the neighbors of the current node and the weights
                          corresponding to each one.
-            corrective_spacing (number): The spacing parameter for corrective consensus
             communicator (Communicator): The communicator object to send and receive messages.abs
 
     Returns:

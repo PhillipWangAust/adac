@@ -1,6 +1,7 @@
 import pickle
 import socket
 import struct
+import fcntl
 
 def get_ip_address(ifname):
     '''Returns the IP Address
@@ -29,13 +30,11 @@ def matrix_to_bytes(data):
     '''Convert a numpy matrix to an array of bytes to transfer
      over the network*
 
-    *This is just a simple type of implementation. A reason one may
-    have for not using something as simple as the pickle library is
-     that unpickling data after it has been sent over the
-     network can be maliciously modified to execute arbitrary code when
-     being unpickled which inherntly presents a serious security hazard.
-     Anyone using this code in a security-concious environment should
-     replace the matrix_*_bytes pair of methods with a more suitable
+    *This is just a simple implementation. In production one should probably not use the pickle
+    library. One reason against using pickle is that the process of unpickling data after it
+    has been sent over the network can be maliciously modified to execute arbitrary code which
+    inherntly presents a serious security hazard. Anyone using this code in a security-concious
+    environment should replace the matrix_*_bytes pair of methods with a more suitable
     implementation.
 
     Args:
@@ -53,7 +52,7 @@ def matrix_from_bytes(data):
 
     Please refer to the * note under ``nettools.matrix_to_bytes``
     about the security hazard that the pickling implementation
-    leaves.
+    leaves open.
 
     Args:
             data (bytes): An array of bytes to convert to a numpy
