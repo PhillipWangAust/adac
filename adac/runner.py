@@ -22,8 +22,8 @@ CONF_FILE = 'params.conf'
 def data_loader(filename):
     '''Reads in data line by line from file. and stores in Numpy array
 
-    Each line of the file is a new vector with the format 1, 2, 3, ..., n where
-     n is the length of the vector
+    Each line of the file is a new vector with the format 1 2 3 ... n where n is the length of the
+    vector. The numbers are separated by spaces.
 
     Args:
         str: name of data file
@@ -160,12 +160,10 @@ def kickoff(task, tc):
     logging.debug('Loaded data')
     try:
         consensus_data = consensus.run(data, tc, 1, weights, c)
-        logging.info("~~~~~~~~~~~~~~CONSENSUS DATA BELOW~~~~~~~~~~~~~~~~")
+        logging.info("~~~~~~~~~~~~~~ CONSENSUS DATA ~~~~~~~~~~~~~~~~")
         logging.info('{}'.format(consensus_data))
-        logging.info("~~~~~~~~~~~~~~CONSENSUS DATA ABOVE~~~~~~~~~~~~~~~~")
+        logging.info("~~~~~~~~~~~~~~ CONSENSUS DATA ~~~~~~~~~~~~~~~~")
         logging.debug('Ran consensus')
-        # Log consensus data here
-        ###########################################
     except:
         logging.error('Consensus threw an exception.')
         exc_type, exc_value, exc_traceback = sys.exc_info()
