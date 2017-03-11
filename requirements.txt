@@ -3,3 +3,5 @@ python-mnist
 Pillow
 requests
 Flask
+peewee
+psutil
