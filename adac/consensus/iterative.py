@@ -8,7 +8,6 @@
 
 
 '''
-import time
 import math
 import logging
 import configparser
@@ -20,7 +19,7 @@ from numpy import linalg as LA
 # Consensus Functions
 
 logging.basicConfig(filename='consensus.log')
-
+MPI = False
 
 def get_weights(neighbors, config="params.conf"):
     '''Calculate the Metropolis Hastings weights for the current node and its neighbors.
@@ -57,13 +56,12 @@ def get_weights(neighbors, config="params.conf"):
 
 
 def run(orig_data, tc, tag_id, neighbors, communicator):
-    '''Run run corrective consensus v.s. a list of nodes in order to converge on an agreed-upon
-         average.
+    '''Run consensus v.s. a list of nodes in order to converge upon the network average.
 
     Args:
             orig_data (matrix): The data which we want to find a consensus with (numpy matrix)
             tc (int): Number of consensus iterations
-            tag_id (num): A numbered id for this consensus iteration. Used when sending tag info.abs
+            tag_id (num): A numbered id for this consensus run. Used when sending tag info
             neighbors (dict): an object outlining the neighbors of the current node and the weights
                          corresponding to each one.
             communicator (Communicator): The communicator object to send and receive messages.abs
@@ -74,12 +72,9 @@ def run(orig_data, tc, tag_id, neighbors, communicator):
 
     '''
     logging.debug("tc: {}, tag_id: {}, num neighbors: {}, ".format(tc, tag_id, len(neighbors)))
-    dim = orig_data.shape[0]  # rows
     old_data = orig_data
     new_data = orig_data
-    size = len(neighbors)
-    # phi = np.matrix(np.zeros((dim, size)))  # number of communicators
-    corr_count = 1
+
     neigh_list = list(neighbors.keys())
     logging.debug("Old data before: {}".format(old_data))
     logging.debug("new data before: {}".format(new_data))
@@ -113,23 +108,19 @@ def run(orig_data, tc, tag_id, neighbors, communicator):
 
 
             # Attempt to get any missing data (Basically synchronization)
-            # If I had to guess this is where performance issues are
-            # Gives up after checking 200 times (20 sec timeout)
-            i_cnt = 0
-            while len(missing_data[j]) > 0 and i_cnt < 200:
+            # If I had to guess this is where performance issues stem from
+            while len(missing_data[j]) > 0:
                 tag1 = missing_data[j].popleft()
                 d1 = communicator.get(j, tag1)
                 if d1 != None:
-                    i_cnt = 0
                     logging.debug("Picked up old data on tag {}".format(tag1))
                     t = nettools.matrix_from_bytes(d1)
                     diff = t - old_data
                     logging.debug("diff from neighbor {} is {} ".format(j, diff))
-                    tempsum += neighbors[j] * diff
+                    tempsum += neighbors[j] * diff # weight * diff
                 else:
                     missing_data[j].append(tag1)
-                    time.sleep(0.05)
-                i_cnt += 1
+
             logging.debug("Tempsum iter {} is {}".format(i, tempsum))
 
         new_data = old_data + tempsum
@@ -151,9 +142,13 @@ def transmit(data, tag, neighbors, communicator):
     Returns:
             N/A
     '''
-    for n in neighbors:
-        # logging.debug('Consensus transmitting data to neighbor {} with tag {}'.format(n, tag))
-        communicator.send(n, data, tag)
+    if MPI:
+        #  Send with MPI
+        pass
+    else:
+        for n in neighbors:
+            # logging.debug('Consensus transmitting data to neighbor {} with tag {}'.format(n, tag))
+            communicator.send(n, data, tag)
 
 
 def receive(tag, neighbors, communicator):
@@ -167,15 +162,28 @@ def receive(tag, neighbors, communicator):
     Returns:
             dict: A dictionary mapping each neighbor to the data which is sent.
     '''
-    d = {}
-    for n in neighbors:
-        tmp = communicator.get(n, tag)
-        d[n] = tmp
+    data = {}
+    if MPI:
+        # Do MPI
+        pass
+    else:
+        for n in neighbors:
+            tmp = communicator.get(n, tag)
+            data[n] = tmp
 
-    return d
+    return data
 
 
 def build_tag(tag_id, num):
+    '''Creates a tag from tag_id and the iteration number
+
+    Args:
+        tag_id (int): identifier for consensus run
+        num (int): The iteration number
+
+    Returns:
+        bytes: A unique tag in bytes.
+    '''
     tag = (tag_id % 256).to_bytes(1, byteorder='little')
     if num > 0:
         bts = math.log(num, 2)  # number of bits required
