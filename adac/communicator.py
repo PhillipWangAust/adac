@@ -10,10 +10,11 @@ import struct
 import threading
 import collections
 
-logging.basicConfig(filename='cloud_comm.log')
 
 TAG_SIZE = 4
 SEQ_SIZE = 2
+UDP = 10
+TCP = 20
 
 
 def get_mtu():
@@ -85,6 +86,24 @@ def decode_payload(payload):
     data = json.loads(payload.decode('utf-8'), separator=([':', ',']))
     return data
 
+def build_meta_packet(seq_num, seq_total, tag):
+    '''Create a bytearray which returns a sequence of bytes based on the metadata
+
+    Args:
+        seq_num(int): The packet's sequence number
+        seq_total(int): The total number of sequence packets to be sent
+        tag (bytes): A string or bytes object to encode as the data tag
+
+    Returns:
+        bytearray: A bytearray with the metadata
+    '''
+    if isinstance(seq_total, int) is False or isinstance(seq_num, int) is False:
+        raise TypeError("Sequence number and total must be integer")
+    packet = bytearray()
+    packet += struct.pack('H', seq_total)
+    packet += struct.pack('H', seq_num)
+    packet += tag[0:4]
+    return packet
 
 class Communicator:
     '''This is a threaded class interface designed to send and receive messages
@@ -124,9 +143,8 @@ class Communicator:
 
     Notes:
 
-    - A limitation (dependent upon python implementation) is that threaded
-     there may only be a single python thread running at one time due to GIL
-      (Global Interpreter Lock)
+    - A limitation (dependent upon python implementation) is that there may only be a single python
+    thread running at one time due to GIL (Global Interpreter Lock)
 
     - There is an intermediate step between receiving data and making it
      available to the user. The object must receive all packets in order to
@@ -150,26 +168,36 @@ class Communicator:
         '''Constructor'''
         protocol = protocol.upper()
         if protocol not in ['TCP', 'UDP']:
-            raise ValueError('Protocol must be one of "TCP" or "UDP"')
-        else:
-            self.protocol = protocol  # The protocol an upper case string 'TCP' or 'UDP'
+            raise ValueError('Protocol must be one of TCP or UDP')
 
         if protocol == 'TCP':
-            raise NotImplementedError(
-                'TCP not yet implemented. Please use UDP instead')
+            self.protocol = TCP  # The protocol an upper case string 'TCP' or 'UDP'
+        else:
+            self.protocol = UDP
 
         # Check and create sockets
-        if send_port != None and check_port(send_port):
+        if send_port is not None and check_port(send_port):
             self.send_port = send_port
-            self.send_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            if self.protocol == TCP:
+                self.send_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            else:
+                self.send_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
         if check_port(listen_port):
             self.listen_port = listen_port
-            self.listen_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            if send_port is None:  # If the port and socket were not set
-                self.send_port = self.listen_port
+            if self.protocol == TCP:
+                self.listen_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            else:
+                self.listen_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+            self.send_port = self.listen_port
+            if send_port is None and self.protocol == UDP:  # If the port and socket were not set
+
                 self.send_sock = socket.socket(
                     socket.AF_INET, socket.SOCK_DGRAM)
+            elif send_port is None and self.protocol == TCP:  # If the port and socket were not set
+                self.send_sock = socket.socket(
+                    socket.AF_INET, socket.SOCK_STREAM)
 
         # Set to nonblocking in order to get our threaded server to work :) (We
         # should investigate the performance impact of this)
@@ -179,11 +207,14 @@ class Communicator:
         self.listen_thread = None
         # This tells the listening thread whether or not it need to continue
         # looping to receive messages
+        self.connections = {}
         self.is_listening = False
         self.tmp_data = {}
         self.data_store = {}
         self.mtu = get_mtu()
         self.recv_callback = None
+        self.conn_lock = threading.Lock()
+        self.data_store_lock = threading.Lock()
 
     def register_recv_callback(self, callback):
         '''Allows one to register a callback function which is executed whenever a
@@ -221,7 +252,7 @@ class Communicator:
             BrokenPipeError: If close was already called previously.
 
         '''
-        if self.is_open == True:
+        if self.is_open is True:
             self.stop_listen()
             self.listen_sock.close()
             self.send_sock.close()
@@ -232,7 +263,7 @@ class Communicator:
 
     def listen(self):
         '''Start listening on port ``self.listen_port``. Creates a new thread where the socket will
-        be created
+        listen for incoming data
 
         Args:
             N/A
@@ -246,10 +277,67 @@ class Communicator:
                 'Cannot listen. Sockets were previously closed.')
 
         if self.listen_thread is None:  # Create thread if not already created
-            self.listen_thread = threading.Thread(
-                target=self.__run_listen__, args=(self.listen_sock, '0.0.0.0', self.listen_port))
+            if self.protocol is UDP:
+                self.listen_thread = threading.Thread(target=self.__run_listen__,
+                                                      args=(self.listen_sock, '0.0.0.0',
+                                                            self.listen_port))
+            else:
+                self.listen_thread = threading.Thread(target=self.__run_tcp__,
+                                                      args=(self.listen_sock, '0.0.0.0',
+                                                            self.listen_port))
+
             self.is_listening = True
             self.listen_thread.start()
+
+
+
+    def __run_connect__(self, connection, addr):
+        '''Worker methods which receive data from TCP connections.
+
+        Args:
+            connection (connection): A TCP connection from socket.accept()
+            addr (str): The Inet(6) address representing the address of the client
+        '''
+
+        while self.is_listening:
+            try:
+                data = connection.recv(2048)
+                if data is not None:
+                    self.receive_tcp(data, addr)
+            except:
+                break
+
+        self.conn_lock.acquire()
+        connection.close()
+        self.connections.pop(addr, None) # Remove the connection
+        self.conn_lock.release()
+        return
+
+    def __run_tcp__(self, _sock, host, port):
+        '''Method which accepts TCP connections and passes them off to run_connect
+
+
+        Args:
+            _sock (sockets.socket): A socket object to bind to
+            host (str): The hostname/IP that we should bind the socket to. Use empty string '' for
+            senders who wish to contact you outside the network.
+            port (int): The port as an integer
+        '''
+
+        _sock.bind((host, port))
+        _sock.listen(3) # Accept maximum of three un-accepted conns before refusing
+        threads = []
+        while self.is_listening:
+            conn, addr = _sock.accept()
+            self.conn_lock.acquire()
+            self.connections[addr] = conn
+            self.conn_lock.release()
+            thd = threading.Thread(target=self.__run_connect__,
+                                   args=(conn, addr))
+            threads.append(thd)
+            thd.start()
+
+
 
     def __run_listen__(self, _sock, host, port):
         '''Worker method for the threaded listener in order to retrieve incoming messages
@@ -276,25 +364,6 @@ class Communicator:
                 pass
 
         _sock.close()
-
-    def build_meta_packet(self, seq_num, seq_total, tag):
-        '''Create a bytearray which returns a sequence of bytes based on the metadata
-
-        Args:
-            seq_num(int): The packet's sequence number
-            seq_total(int): The total number of sequence packets to be sent
-            tag (bytes): A string or bytes object to encode as the data tag
-
-        Returns:
-            bytearray: A bytearray with the metadata
-        '''
-        if isinstance(seq_total, int) is False or isinstance(seq_num, int) is False:
-            raise TypeError("Sequence number and total must be integer")
-        packet = bytearray()
-        packet += struct.pack('H', seq_total)
-        packet += struct.pack('H', seq_num)
-        packet += tag[0:4]
-        return packet
 
     def create_packets(self, data, tag):
         '''Segments a chunk of data (payload) into separate packets in order to send in sequence to
@@ -335,7 +404,7 @@ class Communicator:
             destination.
         '''
         packets = []
-        max_payload = self.mtu - 60 - 8  # conservative estimate to prevent IP fragmenting
+        max_payload = self.mtu - 68  # conservative estimate to prevent IP fragmenting on UDP
         metadata_size = 8  # 8 bytes
         data_size = len(data)
         max_data = max_payload - metadata_size
@@ -345,28 +414,56 @@ class Communicator:
         # - We must break into multiple packets which will require sequencing
         if data_size <= max_data:
             # Assemble the packet, no sequencing
-            payload = self.build_meta_packet(0, 0, tag)
+            payload = build_meta_packet(0, 0, tag)
             payload += data
             packets.append(payload)
         else:
             total_packets = math.floor(data_size / max_payload)
             for i in range(total_packets):  # [0, total_packets-1]
-                p1 = self.build_meta_packet(i, total_packets, tag)
+                pkt1 = build_meta_packet(i, total_packets, tag)
 
                 # Slice data into ~500 byte packs
-                d1 = data[i * max_data:(i + 1) * max_data]
-                p1 += d1
-                packets.append(p1)
+                dat1 = data[i * max_data:(i + 1) * max_data]
+                pkt1 += dat1
+                packets.append(pkt1)
             # Build the  final packet
-            p1 = self.build_meta_packet(total_packets, total_packets, tag)
+            pkt1 = build_meta_packet(total_packets, total_packets, tag)
             min_bound = (total_packets) * max_data
-            d1 = data[min_bound:]
-            p1 += d1
-            packets.append(p1)
+            dat1 = data[min_bound:]
+            pkt1 += dat1
+            packets.append(pkt1)
 
         return packets
 
-    def send(self, ip, data, tag):
+    def tcp_send(self, addrs, data, tag):
+        '''Sends data to the list of specified hosts
+
+        Args:
+            addrs (list): List of addresses to send to
+            data (bytes): Data to send
+            tag (bytes): Message identifier
+
+        '''
+        # Create the packet with tag at the top
+        msg = bytearray()
+        msg += tag
+        msg += data
+        for addr in addrs:
+            if addr in self.connections:
+                self.connections[addr].send(data)
+            else:
+                # Need to create a new connection and a listener thread
+                conn = self.send_sock.connect((addr, self.send_port))
+                conn_thread = threading.Thread(target=self.__run_connect__,
+                                               args=(conn, addr))
+                self.conn_lock.acquire()
+                self.connections[addr] = conn # This is ok b/c thread doesn't start yet.
+                self.conn_lock.release()
+                conn.send(msg)
+                conn_thread.start()
+
+
+    def send(self, ip_addr, data, tag):
         '''Send a chunk of data with a specific tag to an ip address. The packet will be
         automatically chunked into N packets where N = ceil(bytes/(MTU-68))
 
@@ -390,7 +487,7 @@ class Communicator:
         for packet in packets:
             # logging.debug('Sending packet to IP: {} on port {}'.format(ip, self.send_port))
             try:
-                if self.send_sock.sendto(packet, (ip, self.send_port)) < 0:
+                if self.send_sock.sendto(packet, (ip_addr, self.send_port)) < 0:
                     logging.debug("Some packets were not sent successfully")
                     ret = False
 
@@ -400,7 +497,7 @@ class Communicator:
                 break
         return ret
 
-    def get(self, ip, tag):
+    def get(self, ip_addr, tag):
         '''Get a key/tag value from the data store.
 
         The data is only going to be located in the data store if every single packet for the given
@@ -428,17 +525,16 @@ class Communicator:
 
         '''
         data = None
-        tg = int.from_bytes(tag, byteorder='little')
-        if ip not in self.data_store:
+        tg_int = int.from_bytes(tag, byteorder='little')
+        if ip_addr not in self.data_store:
             data = None
-        elif tg not in self.data_store[ip]:
+        elif tg_int not in self.data_store[ip_addr]:
             data = None
         else:
-            data = self.data_store[ip][tg]
-            lock = threading.Lock()
-            lock.acquire()
-            self.data_store[ip][tg] = None
-            lock.release()
+            self.data_store_lock.acquire()
+            data = self.data_store[ip_addr][tg_int]
+            self.data_store[ip_addr][tg_int] = None
+            self.data_store_lock.release()
         return data
 
     def stop_listen(self):
@@ -457,6 +553,30 @@ class Communicator:
             self.is_listening = False
             self.listen_thread.join()
             self.listen_thread = None
+
+    def receive_tcp(self, data, addr):
+        '''Stores the TCP data reveived into the data store
+
+        Args:
+            data (bytes) : The data to store.
+            addr (str): The ip address of the node.
+
+        '''
+        if len(data) < 4:
+            # Log error on data
+            return
+        data_tag = int.from_bytes(data[:4], byteorder='little')
+
+        if addr in self.data_store:
+            self.data_store_lock.acquire()
+            self.data_store[addr][data_tag] = data[4:]
+            self.data_store_lock.release()
+        else:
+            self.data_store_lock.acquire()
+            self.data_store[addr] = {}
+            self.data_store[addr][data_tag] = data[4:]
+            self.data_store_lock.release()
+        return
 
     def receive(self, data, addr):
         '''Take a piece of data received over the socket and processes the data and attempt to
@@ -530,10 +650,9 @@ class Communicator:
                 self.data_store[addr] = {}
             logging.debug("Adding reassmbled packet to data store with IP %s and tag %s",
                           addr, data_tag)
-            lock = threading.Lock()
-            lock.acquire()
+            self.data_store_lock.acquire()
             self.data_store[addr][data_tag] = reassembled
-            lock.release()
+            self.data_store_lock.release()
             if self.recv_callback != None:
                 # run a callback on the newly collected packets.
                 self.recv_callback(addr, data_tag, reassembled)
