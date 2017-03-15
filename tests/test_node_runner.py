@@ -63,7 +63,7 @@ class test_node_runner(unittest.TestCase):
         task = n.TASK_RUNNING
         n.kickoff(task, 20)
         self.assertEqual(mock1.call_count, 1)
-        mock1.assert_any_call('http://192.168.2.183:9090/start/consensus?tc=20')
+        mock1.assert_any_call('http://192.168.2.183:9090/start/consensus?tc=20', timeout=0.1)
 
     def test_load_data(self):
         data = n.data_loader('tests/vectors.txt')

@@ -297,7 +297,7 @@ class TCPCommTest(unittest.TestCase):
         self.assertNotEqual(comm1.is_listening, True)
         self.assertEqual(comm1.listen_thread, None)
 
-    @patch('socket.socket.accept', return_value=(MagicMock(), '127.0.0.1'))
+    @patch('socket.socket.accept', return_value=(MagicMock(), ('127.0.0.1', 1234)))
     @patch('adac.communicator.Communicator.__run_connect__', return_value=-1)
     def test_run_tcp(self, mock_conn, mock_sock):
         '''Make sure that we create all of our threads'''

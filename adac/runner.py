@@ -245,9 +245,6 @@ def get_degree():
     global CONF_FILE
     c = ConfigParser()
     c.read(CONF_FILE)
-    # req_url = urlparse(request.url)
-    # host = o.hostname
-    logger.debug('GOT DEGREE REQUEST')
     host = request.args.get('host')
     a = json.loads(c['graph']['nodes'])
     e = json.loads(c['graph']['edges'])
