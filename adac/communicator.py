@@ -406,12 +406,12 @@ class Communicator:
         while self.is_listening:
             try:
                 conn, addr = _sock.accept()
-                logger.info('Accepted new socket connection to %s', str(addr))
+                logger.info('Accepted new socket connection to %s', str(addr[0]))
                 self.conn_lock.acquire()
-                self.connections[addr] = conn
+                self.connections[addr[0]] = conn
                 self.conn_lock.release()
                 thd = threading.Thread(target=self.__run_connect__,
-                                       args=(conn, addr))
+                                       args=(conn, addr[0]))
                 threads.append(thd)
                 thd.start()
             except socket.timeout as err:
@@ -514,7 +514,7 @@ class Communicator:
             packets.append(pkt1)
 
         return packets
-    
+
     def __attempt_send_data__(self, addr, msg):
         if addr in self.connections:
             self.connections[addr].sendall(msg)
@@ -530,9 +530,11 @@ class Communicator:
                 self.connections[addr] = conn_sock
                 self.conn_lock.release()
                 conn_sock.sendall(msg)
+                logger.debug('Successfully transmitted data to %s', addr)
                 conn_thread.start()
             except OSError as err:
                 # Log message about how unable to send
+                logger.warning('Unable to send data to %s. Error: %s', addr, err)
                 pass
 
     def tcp_send(self, addr, data, tag):
@@ -666,6 +668,7 @@ class Communicator:
         self.data_store_lock.acquire()
         self.data_store[addr][data_tag] = data[4:]
         self.data_store_lock.release()
+        logger.debug('Stored data at [%s][%s]', addr, data_tag)
         if self.recv_callback != None:
             # run a callback on the newly collected data.
             self.recv_callback(addr, data_tag, data[4:])
