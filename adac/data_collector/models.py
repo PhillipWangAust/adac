@@ -1,7 +1,7 @@
 '''Data Models to Store'''
 import json
 from adac.data_collector import DB
-from peewee import Model, CharField, DateTimeField, IntegrityError
+from peewee import Model, CharField, DateTimeField, IntegerField, IntegrityError
 
 class BaseModel(Model):
     '''A base model which sets up the database connection for all inherited classes
@@ -25,18 +25,20 @@ class Event(BaseModel):
     timestamp = DateTimeField()
     event_name = CharField()
     event_data = CharField()
+    iteration = IntegerField()
 
     @classmethod
-    def create_new(cls, node_name, timestamp, event_name, event_data):
+    def create_new(cls, node_name, timestamp, event_name, event_data, iteration):
         '''Creates a new object'''
         try:
             cls.create(
                 node_name=node_name,
                 timestamp=timestamp,
                 event_name=event_name,
-                event_data=event_data)
+                event_data=event_data,
+                iteration=iteration)
         except IntegrityError:
-            raise ValueError("User already exists")
+            raise ValueError("timestamp already exists")
 
 
 class Statistic(BaseModel):
@@ -45,16 +47,18 @@ class Statistic(BaseModel):
     node_name = CharField()
     statistic_type = CharField()
     statistic_value = CharField()
+    iteration = IntegerField()
 
     @classmethod
-    def create_new(cls, node_name, timestamp, statistic_type, statistic_value):
+    def create_new(cls, node_name, timestamp, statistic_type, statistic_value, iteration):
         '''Creates a new object'''
         try:
             cls.create(
                 node_name=node_name,
                 timestamp=timestamp,
                 statistic_type=statistic_type,
-                statistic_value=statistic_value)
+                statistic_value=statistic_value,
+                iteration=iteration)
         except IntegrityError:
             raise ValueError("Couldn't Create Row")
 

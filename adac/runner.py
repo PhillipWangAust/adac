@@ -17,6 +17,7 @@ from flask import Flask, request
 APP = Flask(__name__)
 TASK_RUNNING = Value('i', 0, lock=True)  # 0 == False, 1 == True
 CONF_FILE = 'params.conf'
+logger = logging.getLogger(__name__)
 
 
 def data_loader(filename):
@@ -50,7 +51,8 @@ def get_neighbors():
             N/A
 
     Returns:
-            (iterable): list of IP addresses of neighbors
+            (iterable): list of IP addresses of neighbors. None if no neighbors were found. Check
+            logs for additional information if you keep getting "None".
     '''
 
     global CONF_FILE
@@ -58,8 +60,24 @@ def get_neighbors():
     con.read(CONF_FILE)
     v = json.loads(con['graph']['nodes'])
     e = json.loads(con['graph']['edges'])
-    ip = nettools.get_ip_address('wlan0')
-    i = v.index(ip)
+    ip = None
+    try:
+        ip = nettools.get_ip_address(con['network']['iface'])
+    except OSError as err:
+        logger.warning('Could not retrieve ip address: %s', err)
+        ip = nettools.get_ip_address('wifi0') # Bash on Windows default wlan device
+        logger.info('Successfully retrieved IP address')
+
+    if ip is None:
+        raise OSError('Could not retrieve our IP address. Make sure your connection is "wlan0" or "wifi0"')
+
+    logger.debug('IP of wlan0/wifi0 is %s', ip)
+
+    try:
+        i = v.index(ip)
+    except ValueError as err:
+        logger.warning('IP %s was not found in neighbor list', ip)
+        return None
     n = []
     for x in range(len(v)):
         if e[i][x] == 1 and x != i:
@@ -85,23 +103,23 @@ def run():
     '''
     msg = ""
     global TASK_RUNNING
-    logging.debug('Attempting to kickoff task')
+    logger.debug('Attempting to kickoff task')
     if TASK_RUNNING.value != 1:
         iterations = 50
         try:
             iterations = int(request.args.get('tc'))
         except:
             iterations = 50
-        logging.debug('Setting consensus iterations to {}'.format(iterations))
+        logger.debug('Setting consensus iterations to {}'.format(iterations))
         p = Process(target=kickoff, args=(TASK_RUNNING,iterations,))
         p.daemon = True
         p.start()
-        logging.debug('Started new process')
+        logger.debug('Started new process')
         msg = "Started Running Consensus"
         with TASK_RUNNING.get_lock():
             TASK_RUNNING.value = 1
     else:
-        logging.debug('Task already running')
+        logger.debug('Task already running')
         msg = "Consensus Already Running. Please check logs"
 
     return msg
@@ -127,49 +145,94 @@ def kickoff(task, tc):
     # This the where we would need to do some node discovery, or use a pre-built graph
     # in order to notify all nodes they should begin running
     global CONF_FILE
-    config = ConfigParser()
-    logging.debug('Task was kicked off.')
-
-    config.read(CONF_FILE)
-    port = config['consensus']['udp_port']
-    logging.debug('Communicating on port {}'.format(port))
-    c = Communicator('udp', int(port))
-    c.listen()
-    logging.debug('Now listening on new UDP port')
-    ####### Notify Other Nodes to Start #######
-    port = config['node_runner']['port']
-    logging.debug('Attempting to tell all other nodes in my vicinity to start')
-    neighs = get_neighbors()
-    for node in neighs:
-        req_url = 'http://{}:{}/start/consensus?tc={}'.format(node, port, tc)
-        logging.debug('Kickoff URL for node {} is {}'.format(node, req_url))
-        try:
-            requests.get(req_url)
-        except:
-            logging.debug("Could not hit node {} at {}".format(node, req_url))
-    ########### Run Consensus Here ############
-    # Load parameters:
-    # Load original data
-    # get neighbors and weights get_weights()
-    # Pick a tag ID (doesn't matter) --> 1
-    # communicator already created
-    logging.debug('Got neighbors {}'.format(neighs))
-    weights = consensus.get_weights(neighs)
-    logging.debug('got weights {}'.format(weights))
-    data = data_loader(config['data']['file'])
-    logging.debug('Loaded data')
+    c = None
     try:
-        consensus_data = consensus.run(data, tc, 1, weights, c)
-        logging.info("~~~~~~~~~~~~~~ CONSENSUS DATA ~~~~~~~~~~~~~~~~")
-        logging.info('{}'.format(consensus_data))
-        logging.info("~~~~~~~~~~~~~~ CONSENSUS DATA ~~~~~~~~~~~~~~~~")
-        logging.debug('Ran consensus')
-    except:
-        logging.error('Consensus threw an exception.')
+        config = ConfigParser()
+        logger.debug('Task was kicked off.')
+        config.read(CONF_FILE)
+        port = config['consensus']['port']
+        logger.debug('Communicating on port {}'.format(port))
+        c = Communicator('tcp', int(port))
+        c.listen()
+        logger.debug('Now listening on new TCP port %s', port)
+        ####### Notify Other Nodes to Start #######
+        port = config['node_runner']['port']
+        logger.debug('Attempting to tell all other nodes in my vicinity to start')
+        neighs = get_neighbors()
+        if neighs is None:
+            logger.warning("No neighbors found - consensus finished")
+        else:
+            for node in neighs:
+                req_url = 'http://{}:{}/start/consensus?tc={}'.format(node, port, tc)
+                logger.info('Kickoff URL for node {} is {}'.format(node, req_url))
+                try:
+                    logger.debug("MAKING REUQEST")
+                    requests.get(req_url, timeout=0.1)
+                    logger.debug('Made kickoff request')
+                except:
+                    logger.warning("Could not hit node {} at {}".format(node, req_url))
+        ########### Run Consensus Here ############
+        # Load parameters:
+        # Load original data
+        # get neighbors and weights get_weights()
+        # Pick a tag ID (doesn't matter) --> 1
+        # communicator already created
+        logger.debug('My neighbors {}'.format(neighs))
+        weights = consensus.get_weights(neighs)
+        logger.debug('Neighbor weights {}'.format(weights))
+        data = data_loader(config['data']['file'])
+        logger.debug('Loaded data')
+        try:
+            consensus_data = consensus.run(data, tc, 1, weights, c)
+            logger.info("~~~~~~~~~~~~~~ CONSENSUS DATA ~~~~~~~~~~~~~~~~")
+            logger.info('{}'.format(consensus_data))
+            logger.info("~~~~~~~~~~~~~~ CONSENSUS DATA ~~~~~~~~~~~~~~~~")
+            logger.debug('Ran consensus')
+        except:
+            exc_type, exc_value, exc_traceback = sys.exc_info()
+            # logger.error("Error: {}".format(e))
+            logger.error('Consensus exception %s', repr(traceback.format_tb(exc_traceback)))
+    except BaseException as err:
+        logger.error('Error while running consensus: %s', err)
         exc_type, exc_value, exc_traceback = sys.exc_info()
-        # logging.error("Error: {}".format(e))
-        logging.error(repr(traceback.format_tb(exc_traceback)))
-    c.close()
+        # logger.error("Error: {}".format(e))
+        logger.error('Consensus exception %s', repr(traceback.format_tb(exc_traceback)))
+    finally:
+        if isinstance(c, Communicator):
+            c.close()
+
+    try:
+        logger.debug('parsing and sending logs as json')
+        global config_file
+        config = ConfigParser()
+        config.read(CONF_FILE)
+        f = config['logging']['log_file']
+        post_url = config['collector']['url']
+        # print('FILE :::: {}'.format(f))
+        content = []
+        with open(f, 'r') as fhandle:
+            content = fhandle.readlines()
+        stats = []
+        events = []
+        for line in content:
+            line = line.strip()
+            if 'psutil' in line:
+                fields = line.split(' | ')
+                datadict = { 'timestamp': fields[0],
+                             'iteration': fields[3][fields[3].rfind(' '):].strip(),
+                             'statistic_type': fields[4][:fields[4].index('(')],
+                             'statistic_value': fields[4][fields[4].index('(')+1:-1]}
+
+                stats.append(datadict)
+
+                pass # statistic
+            else:
+                pass # event
+        requests.post(post_url + '/statistics', json=json.dumps(stats))
+
+    except BaseException as err:
+        logger.info('error when processing log file: %s', str(err))
+
     with task.get_lock():
         task.value = 0
 
@@ -177,7 +240,6 @@ def kickoff(task, tc):
 @APP.route('/degree')
 def get_degree():
     '''Get the degree of connections for this node.
-
     We assume the node is always connected to itself, so the number should always be atleast 1.
     '''
     global CONF_FILE
@@ -185,6 +247,7 @@ def get_degree():
     c.read(CONF_FILE)
     # req_url = urlparse(request.url)
     # host = o.hostname
+    logger.debug('GOT DEGREE REQUEST')
     host = request.args.get('host')
     a = json.loads(c['graph']['nodes'])
     e = json.loads(c['graph']['edges'])
@@ -208,15 +271,15 @@ def start():
         CONF_FILE = "params.conf"
     config.read(CONF_FILE)
 
-
+    log_fmt = '%(asctime)s | %(name)s | %(levelname)s | %(message)s'
     root_level = int(config['logging']['level'])
-    logging.basicConfig(filename=config['logging']['log_file'], level=root_level)
+    logging.basicConfig(filename=config['logging']['log_file'], filemode='w', level=root_level, format=log_fmt)
     root = logging.getLogger()
     root.setLevel(root_level)
 
     ch = logging.StreamHandler(sys.stdout)
     ch.setLevel(root_level)
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    formatter = logging.Formatter(log_fmt)
     ch.setFormatter(formatter)
     root.addHandler(ch)
 

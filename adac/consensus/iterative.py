@@ -16,9 +16,11 @@ import requests
 import adac.nettools as nettools
 import numpy as np
 from numpy import linalg as LA
+import psutil
+from adac.data_collector.util_logger import psLogger
 # Consensus Functions
-
-logging.basicConfig(filename='consensus.log')
+plogger = psLogger('.'.join([__name__, 'psutil']))
+logger = logging.getLogger(__name__)
 MPI = False
 
 def get_weights(neighbors, config="params.conf"):
@@ -39,10 +41,10 @@ def get_weights(neighbors, config="params.conf"):
     my_deg = len(neighbors)
     for neigh in neighbors:
         r_url = 'http://{}:{}/degree?host={}'.format(neigh, port, neigh)
-        logging.debug('Attempting to get degree of node {}'.format(neigh))
-        logging.debug('Degree request URL {}'.format(r_url))
+        logger.debug('Attempting to get degree of node {}'.format(neigh))
+        logger.debug('Degree request URL {}'.format(r_url))
         try:
-            res = requests.get(r_url)
+            res = requests.get(r_url, timeout=0.5)
 
             if res.status_code == 200:
                 degs[neigh] = int(res.text)
@@ -71,19 +73,25 @@ def run(orig_data, tc, tag_id, neighbors, communicator):
 
 
     '''
-    logging.debug("tc: {}, tag_id: {}, num neighbors: {}, ".format(tc, tag_id, len(neighbors)))
+    plogger.log_cpu_time("0")
+    plogger.log_mem("0")
+    plogger.log_network("0")
+    logger.debug("tc: {}, tag_id: {}, num neighbors: {}, ".format(tc, tag_id, len(neighbors)))
     old_data = orig_data
     new_data = orig_data
 
     neigh_list = list(neighbors.keys())
-    logging.debug("Old data before: {}".format(old_data))
-    logging.debug("new data before: {}".format(new_data))
+    logger.debug("Old data before: {}".format(old_data))
+    logger.debug("new data before: {}".format(new_data))
     missing_data = {}
     for n in neigh_list:
         missing_data[n] = deque()
 
     for i in range(tc):
-        logging.info('Iter {}, Data: {}'.format(i, new_data))
+        plogger.log_cpu_time('{}'.format(i+1))
+        plogger.log_mem('{}'.format(i+1))
+        plogger.log_network('{}'.format(i+1))
+        logger.info('{} | Data: {}'.format(i+1, new_data))
         old_data = new_data
 
         # transfer data
@@ -100,12 +108,11 @@ def run(orig_data, tc, tag_id, neighbors, communicator):
             if data[j] != None:  # if data was received, then...
                 t = nettools.matrix_from_bytes(data[j])
                 diff = t - old_data
-                logging.debug("diff from neighbor {} is {} ".format(j, diff))
+                logger.debug("diff from neighbor {} is {} ".format(j, diff))
                 tempsum += neighbors[j] * diff  # 'mass' added to itself
             elif data[j] == None: # add to the missing queue
                 missing_data[j].append(tag)
-                logging.debug('Adding {} to missing packets of neighbor {}'.format(tag, j))
-
+                logger.debug('Adding {} to missing packets of neighbor {}'.format(tag, j))
 
             # Attempt to get any missing data (Basically synchronization)
             # If I had to guess this is where performance issues stem from
@@ -113,18 +120,17 @@ def run(orig_data, tc, tag_id, neighbors, communicator):
                 tag1 = missing_data[j].popleft()
                 d1 = communicator.get(j, tag1)
                 if d1 != None:
-                    logging.debug("Picked up old data on tag {}".format(tag1))
+                    logger.debug("Picked up old data on tag {}".format(tag1))
                     t = nettools.matrix_from_bytes(d1)
                     diff = t - old_data
-                    logging.debug("diff from neighbor {} is {} ".format(j, diff))
+                    logger.debug("diff from neighbor {} is {} ".format(j, diff))
                     tempsum += neighbors[j] * diff # weight * diff
                 else:
                     missing_data[j].append(tag1)
 
-            logging.debug("Tempsum iter {} is {}".format(i, tempsum))
+            logger.debug("Tempsum iter {} is {}".format(i, tempsum))
 
         new_data = old_data + tempsum
-
 
     return new_data
 
@@ -147,8 +153,8 @@ def transmit(data, tag, neighbors, communicator):
         pass
     else:
         for n in neighbors:
-            # logging.debug('Consensus transmitting data to neighbor {} with tag {}'.format(n, tag))
-            communicator.send(n, data, tag)
+            # logger.debug('Consensus transmitting data to neighbor {} with tag {}'.format(n, tag))
+            communicator.tcp_send(n, data, tag)
 
 
 def receive(tag, neighbors, communicator):

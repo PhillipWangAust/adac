@@ -1,6 +1,7 @@
 '''Upload data from experiments where the logs can be viewed and stored
 '''
 import json
+from urllib.parse import urlparse
 from flask import Flask, request
 from peewee import SqliteDatabase
 
@@ -9,10 +10,9 @@ def set_db(db_name):
     return SqliteDatabase(db_name)
 
 APP = Flask(__name__)
-DB = set_db(__name__)
+DB = set_db(__name__ + '.db')
 
 from adac.data_collector.models import Statistic, Event
-
 
 @APP.route('/logs/<node>', methods=['GET', 'POST'])
 def logs(node):
@@ -43,10 +43,27 @@ def statistics(node):
     elif request.method is 'POST':
         data = request.get_json()
         for d in data:
-            Statistic.create(node_name=d['node_name'],
+            Statistic.create(node_name=request.remote_addr,
                              timestamp=d['timestamp'],
                              statistic_type=d['statistic_type'],
                              statistic_value=d['statistic_value'])
         return json.dumps({'msg': "Success"})
+@APP.route('/statistics', methods=['POST'])
+def post_stats():
+    '''Upload statistics froma specific node'''
+    data = request.get_json()
+    data = json.loads(data)
+    for d in data:
+        Statistic.create(node_name=request.remote_addr,
+                         timestamp=d['timestamp'],
+                         statistic_type=d['statistic_type'],
+                         statistic_value=d['statistic_value'],
+                         iteration=int(d['iteration']))
+    return json.dumps({'msg': "Success"})
 
 
+
+def run():
+    Statistic.create_table(fail_silently=True)
+    Event.create_table(fail_silently=True)
+    APP.run('0.0.0.0', 5000)

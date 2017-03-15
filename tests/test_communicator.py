@@ -4,6 +4,8 @@ import struct
 import time
 import unittest
 import threading
+import socket
+import struct
 from unittest.mock import MagicMock, patch
 
 from adac import communicator as comm
@@ -116,7 +118,6 @@ class TestCommunicator(unittest.TestCase):
         r = bytes() # total data bytes
         t = bytes()
         for packet in packs:
-            # print("Packet Size: {}".format(len(packet)))
             r += packet[8:]
             t += packet
 
@@ -197,7 +198,6 @@ class TestCommunicator(unittest.TestCase):
         reassembled corectly.'''
         comm1 = Communicator('udp', 10001)
         l = str(list(range(1000))).encode('utf-8')
-        # print(l)
         packets = comm1.create_packets(l, '_get'.encode('utf-8'))
         for packet in packets:
             comm1.receive(packet, 'test')
@@ -297,7 +297,7 @@ class TCPCommTest(unittest.TestCase):
         self.assertNotEqual(comm1.is_listening, True)
         self.assertEqual(comm1.listen_thread, None)
 
-    @patch('socket.socket.accept', return_value=('connection', '127.0.0.1'))
+    @patch('socket.socket.accept', return_value=(MagicMock(), '127.0.0.1'))
     @patch('adac.communicator.Communicator.__run_connect__', return_value=-1)
     def test_run_tcp(self, mock_conn, mock_sock):
         '''Make sure that we create all of our threads'''
@@ -311,10 +311,11 @@ class TCPCommTest(unittest.TestCase):
         thd.join()
         self.assertTrue(mock_sock.called)
         self.assertTrue(mock_conn.called)
-        self.assertEqual(comm1.connections['127.0.0.1'], 'connection')
+        self.assertTrue(isinstance(comm1.connections['127.0.0.1'], MagicMock))
         comm1.close()
 
-    @patch('socket.socket.recv', return_value=('hello world'.encode('utf-8')))
+    @patch('socket.socket.recv',
+           side_effect=[struct.pack('!I', 5), 'hello world'.encode('utf-8'), b''])
     def test_run_connect(self, mock_recv):
         '''Make sure that we can receive data'''
         comm1 = Communicator('TCP', 8998)
@@ -341,6 +342,43 @@ class TCPCommTest(unittest.TestCase):
         comm1.receive_tcp(pkt, '127.0.0.1')
         self.assertEqual(comm1.get('127.0.0.1', tag), data)
         comm1.close()
+
+    def test_recv_n_bytes(self):
+        '''Make sure that the function to receive at most "n" bytes works correctly
+        Used for message delimiting'''
+        with patch('socket.socket.recv', side_effect=[b'1', b'2', b'3', b'4']):
+            _sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            msg = comm.recv_n_bytes(_sock, 4)
+            self.assertEqual(msg, b'1234')
+            _sock.close()
+
+        def recv(n):
+            if n < 8:
+                return b'tcp_sock'[:n]
+            else:
+                return b'tcp_sock'
+        with patch('socket.socket.recv', side_effect=recv):
+            _sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            msg = comm.recv_n_bytes(_sock, 5)
+            self.assertEqual(msg, b'tcp_s')
+            msg = comm.recv_n_bytes(_sock, 25)
+            self.assertEqual(msg, (b'tcp_sock'*5)[:25])
+            msg = comm.recv_n_bytes(_sock, -1)
+            self.assertEqual(msg, None)
+            _sock.close()
+
+        with patch('socket.socket.recv', return_value=struct.pack('!I', 512)):
+            _sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            msg = comm.recv_n_bytes(_sock, 4)
+            self.assertEqual(struct.unpack('!I', msg)[0], 512)
+            _sock.close()
+
+        with patch('socket.socket.recv', side_effect=[b'\x00', b'\x00', b'\x02', b'\x00']):
+            _sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            msg = comm.recv_n_bytes(_sock, 4)
+            self.assertEqual(struct.unpack('!I', msg)[0], 512)
+            _sock.close()
+
 
 
 
