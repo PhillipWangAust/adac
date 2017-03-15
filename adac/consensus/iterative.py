@@ -11,6 +11,7 @@
 import math
 import logging
 import configparser
+import time
 from collections import deque
 import requests
 import adac.nettools as nettools
@@ -116,8 +117,13 @@ def run(orig_data, tc, tag_id, neighbors, communicator):
 
             # Attempt to get any missing data (Basically synchronization)
             # If I had to guess this is where performance issues stem from
+            start = time.time()
             while len(missing_data[j]) > 0:
+                if time.time() - start > 15:
+                    logger.error('Consensus timed out while waiting for missing data')
+                    return None
                 tag1 = missing_data[j].popleft()
+                # logger.debug('missing data tag: %s', tag1)
                 d1 = communicator.get(j, tag1)
                 if d1 != None:
                     logger.debug("Picked up old data on tag {}".format(tag1))
@@ -153,7 +159,7 @@ def transmit(data, tag, neighbors, communicator):
         pass
     else:
         for n in neighbors:
-            # logger.debug('Consensus transmitting data to neighbor {} with tag {}'.format(n, tag))
+            logger.debug('Consensus transmitting data to neighbor {} with tag {}'.format(n, tag))
             communicator.tcp_send(n, data, tag)
 
 
