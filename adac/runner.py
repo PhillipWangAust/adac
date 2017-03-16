@@ -4,6 +4,7 @@ import json
 import logging
 import sys
 import traceback
+import uuid
 from configparser import ConfigParser
 from multiprocessing import Process, Value
 from urllib.parse import urlparse
@@ -14,9 +15,16 @@ from adac.communicator import Communicator
 import requests
 from flask import Flask, request
 
+class IDFilter(logging.Filter):
+    def __init__(self, id):
+        self.id = id
+    def filter(self, record):
+        record.id = self.id
+        return True
 APP = Flask(__name__)
 TASK_RUNNING = Value('i', 0, lock=True)  # 0 == False, 1 == True
 CONF_FILE = 'params.conf'
+idfilt = IDFilter('0000-0000')
 logger = logging.getLogger(__name__)
 
 
@@ -110,8 +118,17 @@ def run():
             iterations = int(request.args.get('tc'))
         except:
             iterations = 50
+
+        cid = request.args.get('id')
+        print('Got cid from req: {}'.format(cid))
+        if cid is None:
+            # ID not present - generate one and pass is on
+            print('Set new UUID')
+            cid = uuid.uuid4()
+        idfilt.id = cid
+
         logger.debug('Setting consensus iterations to {}'.format(iterations))
-        p = Process(target=kickoff, args=(TASK_RUNNING,iterations,))
+        p = Process(target=kickoff, args=(TASK_RUNNING,iterations,cid))
         p.daemon = True
         p.start()
         logger.debug('Started new process')
@@ -133,7 +150,7 @@ def run2():
     return "We can't run Cloud K-SVD quite yet. Please check back later."
 
 
-def kickoff(task, tc):
+def kickoff(task, tc, consensus_id):
     '''The worker method for running distributed consensus.
 
         Args:
@@ -163,7 +180,7 @@ def kickoff(task, tc):
             logger.warning("No neighbors found - consensus finished")
         else:
             for node in neighs:
-                req_url = 'http://{}:{}/start/consensus?tc={}'.format(node, port, tc)
+                req_url = 'http://{}:{}/start/consensus?tc={}&id={}'.format(node, port, tc, consensus_id)
                 logger.info('Kickoff URL for node {} is {}'.format(node, req_url))
                 try:
                     logger.debug("MAKING REUQEST")
@@ -218,14 +235,13 @@ def kickoff(task, tc):
             line = line.strip()
             if 'psutil' in line:
                 fields = line.split(' | ')
-                datadict = { 'timestamp': fields[0],
-                             'iteration': fields[3][fields[3].rfind(' '):].strip(),
-                             'statistic_type': fields[4][:fields[4].index('(')],
-                             'statistic_value': fields[4][fields[4].index('(')+1:-1]}
+                datadict = {'timestamp': fields[0],
+                            'iteration': fields[3],
+                            'statistic_type': fields[4][:fields[4].index('(')],
+                            'statistic_value': fields[4][fields[4].index('(')+1:-1],
+                            'experiment_id': fields[5]}
 
                 stats.append(datadict)
-
-                pass # statistic
             else:
                 pass # event
         requests.post(post_url + '/statistics', json=json.dumps(stats))
@@ -268,9 +284,13 @@ def start():
         CONF_FILE = "params.conf"
     config.read(CONF_FILE)
 
-    log_fmt = '%(asctime)s | %(name)s | %(levelname)s | %(message)s'
+    log_fmt = '%(asctime)s | %(name)s | %(levelname)s | %(message)s | %(id)s'
     root_level = int(config['logging']['level'])
-    logging.basicConfig(filename=config['logging']['log_file'], filemode='w', level=root_level, format=log_fmt)
+    fh = logging.FileHandler(config['logging']['log_file'], mode='w')
+    fh.setLevel(root_level)
+    fh.setFormatter(logging.Formatter(log_fmt))
+    fh.addFilter(idfilt)
+    logging.basicConfig(handlers=[fh])
     root = logging.getLogger()
     root.setLevel(root_level)
 
@@ -278,6 +298,7 @@ def start():
     ch.setLevel(root_level)
     formatter = logging.Formatter(log_fmt)
     ch.setFormatter(formatter)
+    ch.addFilter(idfilt)
     root.addHandler(ch)
 
     nr = config['node_runner']

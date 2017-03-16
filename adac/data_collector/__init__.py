@@ -10,7 +10,16 @@ def set_db(db_name):
     return SqliteDatabase(db_name)
 
 APP = Flask(__name__)
-DB = set_db(__name__ + '.db')
+DB = set_db('dc.db')
+
+@APP.before_request
+def db_connect():
+    DB.connect()
+
+@APP.after_request
+def db_disconnect(response):
+    DB.close()
+    return response
 
 from adac.data_collector.models import Statistic, Event
 
@@ -58,7 +67,8 @@ def post_stats():
                          timestamp=d['timestamp'],
                          statistic_type=d['statistic_type'],
                          statistic_value=d['statistic_value'],
-                         iteration=int(d['iteration']))
+                         iteration=int(d['iteration']),
+                         experiment_id=d['experiment_id'])
     return json.dumps({'msg': "Success"})
 
 

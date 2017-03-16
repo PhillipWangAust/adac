@@ -26,9 +26,10 @@ class Event(BaseModel):
     event_name = CharField()
     event_data = CharField()
     iteration = IntegerField()
+    experiment_id = CharField()
 
     @classmethod
-    def create_new(cls, node_name, timestamp, event_name, event_data, iteration):
+    def create_new(cls, node_name, timestamp, event_name, event_data, iteration, experiment_id):
         '''Creates a new object'''
         try:
             cls.create(
@@ -36,7 +37,8 @@ class Event(BaseModel):
                 timestamp=timestamp,
                 event_name=event_name,
                 event_data=event_data,
-                iteration=iteration)
+                iteration=iteration,
+                experiment_id=experiment_id)
         except IntegrityError:
             raise ValueError("timestamp already exists")
 
@@ -48,9 +50,10 @@ class Statistic(BaseModel):
     statistic_type = CharField()
     statistic_value = CharField()
     iteration = IntegerField()
+    experiment_id = CharField()
 
     @classmethod
-    def create_new(cls, node_name, timestamp, statistic_type, statistic_value, iteration):
+    def create_new(cls, node_name, timestamp, statistic_type, statistic_value, iteration, experiment_id):
         '''Creates a new object'''
         try:
             cls.create(
@@ -58,7 +61,8 @@ class Statistic(BaseModel):
                 timestamp=timestamp,
                 statistic_type=statistic_type,
                 statistic_value=statistic_value,
-                iteration=iteration)
+                iteration=iteration,
+                experiment_id=experiment_id)
         except IntegrityError:
             raise ValueError("Couldn't Create Row")
 
