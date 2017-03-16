@@ -120,10 +120,8 @@ def run():
             iterations = 50
 
         cid = request.args.get('id')
-        print('Got cid from req: {}'.format(cid))
         if cid is None:
             # ID not present - generate one and pass is on
-            print('Set new UUID')
             cid = uuid.uuid4()
         idfilt.id = cid
 

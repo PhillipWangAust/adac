@@ -61,9 +61,9 @@ class test_node_runner(unittest.TestCase):
     def test_kickoff(self, mock2, mock1, mock3, mock4, mock5):
         consensus.run = MagicMock()
         task = n.TASK_RUNNING
-        n.kickoff(task, 20)
+        n.kickoff(task, 20, '000-000-000-000')
         self.assertEqual(mock1.call_count, 1)
-        mock1.assert_any_call('http://192.168.2.183:9090/start/consensus?tc=20', timeout=0.1)
+        mock1.assert_any_call('http://192.168.2.183:9090/start/consensus?tc=20&id=000-000-000-000', timeout=0.1)
 
     def test_load_data(self):
         data = n.data_loader('tests/vectors.txt')

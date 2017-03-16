@@ -26,7 +26,6 @@ from adac.data_collector.models import Statistic, Event
 @APP.route('/logs/<node>', methods=['GET', 'POST'])
 def logs(node):
     '''Upload or download the run logs '''
-    print("Node: {}".format(node))
     if request.method is 'GET':
         results = Event.select().where(Event.node_name == node)
         return json.dumps(results)
