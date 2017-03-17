@@ -90,4 +90,15 @@ class test_node_runner(unittest.TestCase):
 
         neighbors = n.get_neighbors()
         self.assertEqual(len(neighbors), 3, "Neighbors should be 3 on 2.184")
+   
+    def test_get_indexAndEdges(self):
+
+        index, edges = n.get_indexAndEdges()
+        i = [1, 4, 7, 11, 14]
+        e = [4, 3, 4, 5, 2, 4, 5, 1, 2, 3, 5, 2, 3, 4]
+        for x in range(len(index)):
+            self.assertEqual(i[x], index[x])
+        for y in range(len(edges)):
+            self.assertEqual(e[y], edges[y])
+
 

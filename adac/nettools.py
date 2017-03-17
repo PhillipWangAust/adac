@@ -2,6 +2,10 @@ import pickle
 import socket
 import struct
 import fcntl
+import logging
+import netifaces
+import platform
+logger = logging.getLogger(__name__)
 
 def get_ip_address(ifname):
     '''Returns the IP Address
@@ -18,11 +22,17 @@ def get_ip_address(ifname):
     Throws:
             err: Will throw error if the interface doesn't exist. Use with method within try/catch.
     '''
+    logger.debug('Getting IP address for interface %s', ifname)
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    ip = socket.inet_ntoa(fcntl.ioctl(
-        s.fileno(),
-        0x8915,  # SIOCGIFADDR
-        struct.pack('256s', ifname.encode('utf-8')))[20:24])
+
+    if platform.system()=='Darwin':
+        ip = netifaces.ifaddresses('en0')[2][0]['addr']
+        pass
+    else:
+        ip = socket.inet_ntoa(fcntl.ioctl(
+            s.fileno(),
+            0x8915,  # SIOCGIFADDR
+            struct.pack('256s', ifname.encode('utf-8')))[20:24])
     return ip
 
 

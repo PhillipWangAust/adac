@@ -12,6 +12,7 @@ import math
 import logging
 import configparser
 import time
+
 from collections import deque
 import requests
 import adac.nettools as nettools
@@ -19,6 +20,7 @@ import numpy as np
 from numpy import linalg as LA
 import psutil
 from adac.data_collector.util_logger import psLogger
+from mpi4py import MPI as OMPI
 # Consensus Functions
 plogger = psLogger('.'.join([__name__, 'psutil']))
 logger = logging.getLogger(__name__)
@@ -156,11 +158,13 @@ def transmit(data, tag, neighbors, communicator):
     '''
     if MPI:
         #  Send with MPI
+        for n in neighbors:
+            communicator.send(data, n, tag)
         pass
     else:
         for n in neighbors:
             logger.debug('Consensus transmitting data to neighbor {} with tag {}'.format(n, tag))
-            communicator.tcp_send(n, data, tag)
+            communicator.tcp_send(n, data, int.from_bytes(tag, byteorder="little"))
 
 
 def receive(tag, neighbors, communicator):
@@ -176,7 +180,9 @@ def receive(tag, neighbors, communicator):
     '''
     data = {}
     if MPI:
-        # Do MPI
+        for n in neighbors:
+            rectemp = comm.irecv(n, int.from_bytes(tag, byteorder="little"))
+            data[n] = rectemp
         pass
     else:
         for n in neighbors:

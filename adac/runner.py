@@ -14,6 +14,7 @@ import adac.nettools as nettools
 from adac.communicator import Communicator
 import requests
 from flask import Flask, request
+from mpi4py import MPI as OMPI
 
 class IDFilter(logging.Filter):
     def __init__(self, id):
@@ -26,6 +27,7 @@ TASK_RUNNING = Value('i', 0, lock=True)  # 0 == False, 1 == True
 CONF_FILE = 'params.conf'
 idfilt = IDFilter('0000-0000')
 logger = logging.getLogger(__name__)
+MPI = False
 
 
 def data_loader(filename):
@@ -92,7 +94,33 @@ def get_neighbors():
             n.append(v[x])
 
     return n
+def get_indexAndEdges():
+    '''Gets index and edge lists to be passed into OMPI.COMM_WORLD.Create_graph
 
+    Args:
+            N/A
+
+    Returns:
+            (iterable): list of indexes
+            (iterable): list of edges
+    '''
+    global CONF_FILE
+    con = ConfigParser()
+    con.read(CONF_FILE)
+    graph = json.loads(con['graph']['edges'])
+    edges = []
+    index = []
+    index_count = 0
+    for i in range(len(graph)):
+        for j in range (len(graph[i])):
+            if graph[i][j]==1:
+                if i != j:
+                    edges.append(j+1)
+                    index_count += 1
+        index.append(index_count)
+        if edges ==[]:
+            edges.append(1);                                                                                                                                                                                                                                                                                                                                                                                                                                     
+    return index, edges
 
 @APP.route("/start/consensus")
 def run():
@@ -112,6 +140,14 @@ def run():
     msg = ""
     global TASK_RUNNING
     logger.debug('Attempting to kickoff task')
+
+    #open config file set mpi to true or false
+    global CONF_FILE
+    global MPI
+    config = ConfigParser()
+    config.read(CONF_FILE)
+    MPI = bool(config['consensus']['MPI'])
+
     if TASK_RUNNING.value != 1:
         iterations = 50
         try:
@@ -161,19 +197,39 @@ def kickoff(task, tc, consensus_id):
     # in order to notify all nodes they should begin running
     global CONF_FILE
     c = None
+    neighs = None
     try:
         config = ConfigParser()
         logger.debug('Task was kicked off.')
         config.read(CONF_FILE)
         port = config['consensus']['port']
         logger.debug('Communicating on port {}'.format(port))
-        c = Communicator('tcp', int(port))
-        c.listen()
-        logger.debug('Now listening on new TCP port %s', port)
+        if MPI:
+            c = OMPI.COMM_WORLD
+            comm = OMPI.Intracomm(c)
+             #index and edges returned from function that converts adjacency matrix to MPI syntax
+            index, edges = get_indexAndEdges()
+            graph = comm.Create_graph(index, edges)
+            print(c)
+            print(comm)
+            print(index)
+            print(edges)
+            print(graph)
+            rank = c.Get_rank()
+            print(rank)
+            print(graph.Get_neighbors_count(rank))
+            neighs = graph.Get_neighbors(rank)
+            #populate neighs with ranks of neghbor nodes using Graphcomm.get_neighbors()
+            pass
+        else:
+            c = Communicator('tcp', int(port))
+            c.listen()
+            logger.debug('Now listening on new TCP port %s', port)
+            neighs = get_neighbors()
         ####### Notify Other Nodes to Start #######
         port = config['node_runner']['port']
         logger.debug('Attempting to tell all other nodes in my vicinity to start')
-        neighs = get_neighbors()
+        
         if neighs is None:
             logger.warning("No neighbors found - consensus finished")
         else:
@@ -198,6 +254,8 @@ def kickoff(task, tc, consensus_id):
         data = data_loader(config['data']['file'])
         logger.debug('Loaded data')
         try:
+            #set MPI to true or false
+            consensus.MPI = MPI
             consensus_data = consensus.run(data, tc, 1, weights, c)
             logger.info("~~~~~~~~~~~~~~ CONSENSUS DATA ~~~~~~~~~~~~~~~~")
             logger.info('{}'.format(consensus_data))
@@ -304,3 +362,8 @@ def start():
 
 if __name__ == "__main__":
     start()
+
+
+
+
+
