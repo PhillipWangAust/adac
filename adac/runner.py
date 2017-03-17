@@ -146,7 +146,7 @@ def run():
     global MPI
     config = ConfigParser()
     config.read(CONF_FILE)
-    MPI = bool(config['consensus']['MPI'])
+    MPI = config['consensus'].getboolean('MPI')
 
     if TASK_RUNNING.value != 1:
         iterations = 50
@@ -175,15 +175,6 @@ def run():
 
     return msg
 
-
-@APP.route("/start/cloudksvd")
-def run2():
-    '''Placeholder for when we want to start running Cloud K-SVD using this paradigm.
-    '''
-    global TASK_RUNNING
-    return "We can't run Cloud K-SVD quite yet. Please check back later."
-
-
 def kickoff(task, tc, consensus_id):
     '''The worker method for running distributed consensus.
 
@@ -210,17 +201,9 @@ def kickoff(task, tc, consensus_id):
              #index and edges returned from function that converts adjacency matrix to MPI syntax
             index, edges = get_indexAndEdges()
             graph = comm.Create_graph(index, edges)
-            print(c)
-            print(comm)
-            print(index)
-            print(edges)
-            print(graph)
             rank = c.Get_rank()
-            print(rank)
-            print(graph.Get_neighbors_count(rank))
             neighs = graph.Get_neighbors(rank)
             #populate neighs with ranks of neghbor nodes using Graphcomm.get_neighbors()
-            pass
         else:
             c = Communicator('tcp', int(port))
             c.listen()
@@ -229,7 +212,7 @@ def kickoff(task, tc, consensus_id):
         ####### Notify Other Nodes to Start #######
         port = config['node_runner']['port']
         logger.debug('Attempting to tell all other nodes in my vicinity to start')
-        
+
         if neighs is None:
             logger.warning("No neighbors found - consensus finished")
         else:
@@ -281,7 +264,6 @@ def kickoff(task, tc, consensus_id):
         config.read(CONF_FILE)
         f = config['logging']['log_file']
         post_url = config['collector']['url']
-        # print('FILE :::: {}'.format(f))
         content = []
         with open(f, 'r') as fhandle:
             content = fhandle.readlines()

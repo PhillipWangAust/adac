@@ -12,6 +12,7 @@ import adac.nettools as nettools
 
 n.CONF_FILE = 'params_test.conf'
 
+
 class test_node_runner(unittest.TestCase):
 
     def setUp(self):
