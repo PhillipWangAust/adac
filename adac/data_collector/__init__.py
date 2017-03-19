@@ -3,7 +3,7 @@
 import json
 from urllib.parse import urlparse
 from flask import Flask, request
-from peewee import SqliteDatabase
+from peewee import SqliteDatabase, OperationalError
 
 def set_db(db_name):
     '''Set the app database'''
@@ -14,11 +14,17 @@ DB = set_db('dc.db')
 
 @APP.before_request
 def db_connect():
-    DB.connect()
+    try:
+        DB.connect()
+    except OperationalError as err:
+        pass
 
 @APP.after_request
 def db_disconnect(response):
-    DB.close()
+    try:
+        DB.close()
+    except:
+        pass
     return response
 
 from adac.data_collector.models import Statistic, Event
