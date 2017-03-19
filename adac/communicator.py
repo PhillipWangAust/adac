@@ -563,7 +563,7 @@ class Communicator:
         Args:
             ip (str): The hostname/ip to send to
             data (bytes): The bytes of data which will be sent to the other host.
-            tag (str): An identifier for the message
+            tag (bytes): An identifier for the message
 
         Returns:
             bool: True if all packets were created and sent successfully.
