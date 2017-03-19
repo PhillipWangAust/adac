@@ -70,7 +70,7 @@ def get_neighbors():
     con.read(CONF_FILE)
     v = json.loads(con['graph']['nodes'])
     e = json.loads(con['graph']['edges'])
-    ip = None
+    ip = None 
     try:
         ip = nettools.get_ip_address(con['network']['iface'])
     except OSError as err:
@@ -115,11 +115,11 @@ def get_indexAndEdges():
         for j in range (len(graph[i])):
             if graph[i][j]==1:
                 if i != j:
-                    edges.append(j+1)
+                    edges.append(j)
                     index_count += 1
         index.append(index_count)
         if edges ==[]:
-            edges.append(1);                                                                                                                                                                                                                                                                                                                                                                                                                                     
+            edges.append(1)
     return index, edges
 
 @APP.route("/start/consensus")
@@ -189,30 +189,15 @@ def kickoff(task, tc, consensus_id):
     global CONF_FILE
     c = None
     neighs = None
+    graph_comm = None
     try:
         config = ConfigParser()
         logger.debug('Task was kicked off.')
         config.read(CONF_FILE)
-        port = config['consensus']['port']
-        logger.debug('Communicating on port {}'.format(port))
-        if MPI:
-            c = OMPI.COMM_WORLD
-            comm = OMPI.Intracomm(c)
-             #index and edges returned from function that converts adjacency matrix to MPI syntax
-            index, edges = get_indexAndEdges()
-            graph = comm.Create_graph(index, edges)
-            rank = c.Get_rank()
-            neighs = graph.Get_neighbors(rank)
-            #populate neighs with ranks of neghbor nodes using Graphcomm.get_neighbors()
-        else:
-            c = Communicator('tcp', int(port))
-            c.listen()
-            logger.debug('Now listening on new TCP port %s', port)
-            neighs = get_neighbors()
         ####### Notify Other Nodes to Start #######
         port = config['node_runner']['port']
-        logger.debug('Attempting to tell all other nodes in my vicinity to start')
-
+        logger.debug('Attempting to tell all other nodes in my vicinity to start')    
+        neighs = get_neighbors()
         if neighs is None:
             logger.warning("No neighbors found - consensus finished")
         else:
@@ -225,6 +210,24 @@ def kickoff(task, tc, consensus_id):
                     logger.debug('Made kickoff request')
                 except:
                     logger.warning("Could not hit node {} at {}".format(node, req_url))
+
+        if MPI:
+            c = OMPI.COMM_WORLD
+            comm = OMPI.Intracomm(c)
+             #index and edges returned from function that converts adjacency matrix to MPI syntax
+            index, edges = get_indexAndEdges()
+            graph = comm.Create_graph(index, edges)
+            graph_comm = graph
+            rank = c.Get_rank()
+            neighs = graph.Get_neighbors(rank)
+            #populate neighs with ranks of neghbor nodes using Graphcomm.get_neighbors()
+        else:
+            port = config['consensus']['port']
+            logger.debug('Communicating on port {}'.format(port))            
+            c = Communicator('tcp', int(port))
+            c.listen()
+            logger.debug('Now listening on new TCP port %s', port)
+
         ########### Run Consensus Here ############
         # Load parameters:
         # Load original data
@@ -232,7 +235,7 @@ def kickoff(task, tc, consensus_id):
         # Pick a tag ID (doesn't matter) --> 1
         # communicator already created
         logger.debug('My neighbors {}'.format(neighs))
-        weights = consensus.get_weights(neighs)
+        weights = consensus.get_weights(neighs, MPI_graph_comm=graph_comm)
         logger.debug('Neighbor weights {}'.format(weights))
         data = data_loader(config['data']['file'])
         logger.debug('Loaded data')
@@ -344,8 +347,3 @@ def start():
 
 if __name__ == "__main__":
     start()
-
-
-
-
-
