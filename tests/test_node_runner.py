@@ -1,7 +1,7 @@
-import sys
-import unittest
+
 import tempfile
 import os
+import unittest
 from unittest import mock
 from unittest.mock import MagicMock, patch
 
@@ -95,8 +95,9 @@ class test_node_runner(unittest.TestCase):
     def test_get_indexAndEdges(self):
 
         index, edges = n.get_indexAndEdges()
+
         i = [1, 4, 7, 11, 14]
-        e = [4, 3, 4, 5, 2, 4, 5, 1, 2, 3, 5, 2, 3, 4]
+        e = [3, 2, 3, 4, 1, 3, 4, 0, 1, 2, 4, 1, 2, 3]
         for x in range(len(index)):
             self.assertEqual(i[x], index[x])
         for y in range(len(edges)):
