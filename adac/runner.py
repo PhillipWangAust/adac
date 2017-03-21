@@ -196,13 +196,14 @@ def kickoff(task, tc, consensus_id):
         config.read(CONF_FILE)
         ####### Notify Other Nodes to Start #######
         port = config['node_runner']['port']
-        logger.debug('Attempting to tell all other nodes in my vicinity to start')    
+        logger.debug('Attempting to tell all other nodes in my vicinity to start')
         neighs = get_neighbors()
         if neighs is None:
             logger.warning("No neighbors found - consensus finished")
         else:
             for node in neighs:
-                req_url = 'http://{}:{}/start/consensus?tc={}&id={}'.format(node, port, tc, consensus_id)
+                req_url = 'http://{}:{}/start/consensus?tc={}&id={}'.format(node,
+                                                                            port, tc, consensus_id)
                 logger.info('Kickoff URL for node {} is {}'.format(node, req_url))
                 try:
                     logger.debug("MAKING REUQEST")
@@ -223,11 +224,12 @@ def kickoff(task, tc, consensus_id):
             #populate neighs with ranks of neghbor nodes using Graphcomm.get_neighbors()
         else:
             port = config['consensus']['port']
-            logger.debug('Communicating on port {}'.format(port))            
+            logger.debug('Communicating on port {}'.format(port))
             c = Communicator('tcp', int(port))
             c.listen()
             logger.debug('Now listening on new TCP port %s', port)
-
+            for neighbor in neighs:
+                c.connect(neighbor)
         ########### Run Consensus Here ############
         # Load parameters:
         # Load original data
@@ -327,16 +329,18 @@ def start():
 
     log_fmt = '%(asctime)s | %(name)s | %(levelname)s | %(message)s | %(id)s'
     root_level = int(config['logging']['level'])
+
     fh = logging.FileHandler(config['logging']['log_file'], mode='w')
     fh.setLevel(root_level)
     fh.setFormatter(logging.Formatter(log_fmt))
     fh.addFilter(idfilt)
+
     logging.basicConfig(handlers=[fh])
     root = logging.getLogger()
     root.setLevel(root_level)
 
     ch = logging.StreamHandler(sys.stdout)
-    ch.setLevel(root_level)
+    ch.setLevel(logging.INFO)
     formatter = logging.Formatter(log_fmt)
     ch.setFormatter(formatter)
     ch.addFilter(idfilt)

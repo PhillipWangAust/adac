@@ -9,6 +9,7 @@ import socket
 import struct
 import threading
 import collections
+import time
 
 
 TAG_SIZE = 4
@@ -303,12 +304,14 @@ class Communicator:
                 self.send_sock.close()
             except:
                 logger.debug('exception closing sending socket')
+            self.conn_lock.acquire()
             for addr in self.connections:
                 try:
                     self.connections[addr].close()
                 except:
                     logger.debug('exception TCP connection from addr %s', addr)
             self.connections = {}
+            self.conn_lock.release()
             self.is_open = False
         else:
             raise BrokenPipeError(
@@ -341,6 +344,63 @@ class Communicator:
 
             self.is_listening = True
             self.listen_thread.start()
+
+    def connect(self, ip_addr, timeout=None):
+        '''Connect to a TCP socket at ip_addr using the send_port.
+
+        The connection of addr will be put into the internal connections dictionary. When the next
+        tcp_send call is initiated a new thread will start reading messages from the connection
+
+        The call will block until timeout seconds have passed. A socket.TimeoutError will be
+        raised if the connection is not successful. Otherwise if timeout is None the call
+        will block indefinitely until a connection has been made.
+
+        Args:
+            ip_addr (str): The IP to connect to on self.send_port
+            timeout (float): Number of seconds to wait before timing out the connection.
+
+        Returns: N/A
+        '''
+        conn = None
+        time_start = time.time()
+        # Work until we hit the timeout
+        self.conn_lock.acquire()
+        if ip_addr in self.connections:
+            self.conn_lock.release()
+            logger.warn('Attempting to make a connection to %s which already exists.', ip_addr)
+            return
+        self.conn_lock.release()
+
+        if timeout is None:
+            while conn is None:
+                try:
+                    conn = socket.create_connection((ip_addr, self.send_port))
+                except socket.timeout as err:
+                    pass
+                except OSError as err:
+                    logger.debug("Got %s while trying to connect() to %s", err, ip_addr)
+        else:
+            while time.time() - time_start < timeout:
+                try:
+                    conn = socket.create_connection((ip_addr, self.send_port), timeout=timeout)
+
+                except BaseException as err:
+                    logger.debug("Exception trying to connect to %s with err %s", ip_addr, err)
+
+        self.conn_lock.acquire()
+        if conn is not None:
+            if ip_addr not in self.connections:
+                self.connections[ip_addr] = conn
+                conn_thread = threading.Thread(target=self.__run_connect__,
+                                               args=(conn, ip_addr))
+                conn_thread.start()
+            else:
+                logger.warning("Connect to ip %s requested but connection already existed", ip_addr)
+                conn.close()
+        else:
+            self.conn_lock.release()
+            raise ConnectionError('Unable to connect to {}'.format(ip_addr))
+        self.conn_lock.release()
 
     def __run_connect__(self, connection, addr):
         '''Worker methods which receive data from TCP connections.
@@ -408,14 +468,18 @@ class Communicator:
                 conn, addr = _sock.accept()
                 logger.info('Accepted new socket connection to %s', str(addr[0]))
                 self.conn_lock.acquire()
-                self.connections[addr[0]] = conn
+                if addr[0] not in self.connections:
+                    self.connections[addr[0]] = conn
+                    thd = threading.Thread(target=self.__run_connect__,
+                                           args=(conn, addr[0]))
+                    threads.append(thd)
+                    thd.start()
+                else:
+                    logger.debug('Got new connection which was already present from %s', addr)
+                    conn.close()
                 self.conn_lock.release()
-                thd = threading.Thread(target=self.__run_connect__,
-                                       args=(conn, addr[0]))
-                threads.append(thd)
-                thd.start()
-            except socket.timeout as err:
-                pass
+            except socket.timeout:
+                pass # okay to timeout while listening
                 # logger.debug('__run_tcp__, connection accept timeout: %s', err)
         logger.debug('Listening thread exiting')
 
@@ -520,22 +584,14 @@ class Communicator:
             self.connections[addr].sendall(msg)
         else:
             try:
-                conn_sock = socket.socket(
-                    socket.AF_INET, socket.SOCK_STREAM)
-                conn_sock.connect((addr, self.send_port))
-                conn_thread = threading.Thread(target=self.__run_connect__,
-                                               args=(conn_sock, addr))
-                self.conn_lock.acquire()
-                # This is ok b/c thread doesn't start yet.
-                self.connections[addr] = conn_sock
-                self.conn_lock.release()
+                self.connect(addr)
+                # addr should now be in connections if connect() was successful
+                conn_sock = self.connections[addr]
                 conn_sock.sendall(msg)
                 logger.debug('Successfully transmitted data to %s', addr)
-                conn_thread.start()
             except OSError as err:
                 # Log message about how unable to send
                 logger.warning('Unable to send data to %s. Error: %s', addr, err)
-                pass
 
     def tcp_send(self, addr, data, tag):
         '''Sends data to specified hosts
@@ -552,9 +608,7 @@ class Communicator:
         msg += data
         mlen = len(msg) # msg length
         msg = struct.pack('!I', mlen) + msg # prepend message length to data
-        thd = threading.Thread(target=self.__attempt_send_data__,
-                               args=(addr, msg))
-        thd.start()
+        self.__attempt_send_data__(addr, msg)
 
     def send(self, ip_addr, data, tag):
         '''Send a chunk of data with a specific tag to an ip address. The packet will be
@@ -744,7 +798,7 @@ class Communicator:
             if addr not in self.data_store:
                 self.data_store[addr] = {}
             logger.debug("Adding reassmbled packet to data store with IP %s and tag %s",
-                          addr, data_tag)
+                         addr, data_tag)
             self.data_store_lock.acquire()
             self.data_store[addr][data_tag] = reassembled
             self.data_store_lock.release()

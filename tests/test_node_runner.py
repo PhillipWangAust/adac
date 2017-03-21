@@ -54,12 +54,13 @@ class test_node_runner(unittest.TestCase):
         self.assertEqual(mock1.called, False, "process start() should *not* have been called.")
         n.TASK_RUNNING.value = 0
 
+    @mock.patch('socket.create_connection', return_value=MagicMock())
     @mock.patch('adac.runner.data_loader', return_value=MagicMock())
     @mock.patch('adac.nettools.get_ip_address', return_value='192.168.2.180')
     @mock.patch('adac.consensus.iterative.get_weights', return_value={'192.168.2.183': 0.5})
     @mock.patch('requests.get')
     @mock.patch('time.sleep')
-    def test_kickoff(self, mock2, mock1, mock3, mock4, mock5):
+    def test_kickoff(self, mock2, mock1, mock3, mock4, mock5, mock6):
         consensus.run = MagicMock()
         task = n.TASK_RUNNING
         n.kickoff(task, 20, '000-000-000-000')
