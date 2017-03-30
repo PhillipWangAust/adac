@@ -5,7 +5,6 @@ import unittest
 from unittest import mock
 from unittest.mock import MagicMock, patch
 
-import adac
 import adac.runner as n
 from adac.consensus import iterative as consensus
 import adac.nettools as nettools
@@ -13,7 +12,7 @@ import adac.nettools as nettools
 n.CONF_FILE = 'params_test.conf'
 
 
-class test_node_runner(unittest.TestCase):
+class TestNodeRunner(unittest.TestCase):
 
     def setUp(self):
         self.db_fd, n.APP.config['DATABASE'] = tempfile.mkstemp()

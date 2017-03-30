@@ -7,7 +7,6 @@ import traceback
 import uuid
 from configparser import ConfigParser
 from multiprocessing import Process, Value
-from urllib.parse import urlparse
 import numpy as np
 import adac.consensus.iterative as consensus
 import adac.nettools as nettools

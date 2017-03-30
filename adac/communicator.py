@@ -131,7 +131,7 @@ def recv_n_bytes(conn, num):
                 # break  # Empty str means closed socket
             msg_b += bts
             bytes_left -= len(bts)
-        except socket.timeout as err:
+        except socket.timeout:
             # Socket timed out - log an error eventually
             # logger.debug('socket timed out recv_n_bytes. %s', str(err))
             pass
@@ -297,18 +297,18 @@ class Communicator:
             self.stop_listen()
             try:
                 self.listen_sock.close()
-            except:
+            except BaseException:
                 logger.debug('exception closing listening socket')
 
             try:
                 self.send_sock.close()
-            except:
+            except BaseException:
                 logger.debug('exception closing sending socket')
             self.conn_lock.acquire()
             for addr in self.connections:
                 try:
                     self.connections[addr].close()
-                except:
+                except BaseException:
                     logger.debug('exception TCP connection from addr %s', addr)
             self.connections = {}
             self.conn_lock.release()
@@ -367,7 +367,7 @@ class Communicator:
         self.conn_lock.acquire()
         if ip_addr in self.connections:
             self.conn_lock.release()
-            logger.warn('Attempting to make a connection to %s which already exists.', ip_addr)
+            logger.warning('Attempting to make a connection to %s which already exists.', ip_addr)
             return
         self.conn_lock.release()
 

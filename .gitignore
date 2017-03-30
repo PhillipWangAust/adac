@@ -87,3 +87,9 @@ ENV/
 
 # Rope project settings
 .ropeproject
+run_collect.py
+params.conf
+experiment.py
+dc.db
+Consensus Analysis.ipynb
+comm_echo.py
