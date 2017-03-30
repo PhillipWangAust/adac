@@ -57,9 +57,10 @@ class TestNodeRunner(unittest.TestCase):
     @mock.patch('adac.runner.data_loader', return_value=MagicMock())
     @mock.patch('adac.nettools.get_ip_address', return_value='192.168.2.180')
     @mock.patch('adac.consensus.iterative.get_weights', return_value={'192.168.2.183': 0.5})
+    @mock.patch('requests.post')
     @mock.patch('requests.get')
     @mock.patch('time.sleep')
-    def test_kickoff(self, mock2, mock1, mock3, mock4, mock5, mock6):
+    def test_kickoff(self, mock2, mock1, mock3, mock4, mock5, mock6, mock7):
         consensus.run = MagicMock()
         task = n.TASK_RUNNING
         n.kickoff(task, 20, '000-000-000-000')
