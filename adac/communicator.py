@@ -300,7 +300,7 @@ class TCPCommunicator(BaseCommunicator):
                     msg = str(err)
 
         if msg is not None:
-            logger.debug("Exception trying to connect to %s with err %s", ip_addr, err)
+            logger.info("Exception trying to connect to %s with err %s", ip_addr, msg)
 
         self.conn_lock.acquire()
         if conn is not None and ip_addr not in self.connections: # Brand new
