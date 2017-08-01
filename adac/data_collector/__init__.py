@@ -3,7 +3,7 @@
 import json
 from urllib.parse import urlparse
 from flask import Flask, request
-from peewee import SqliteDatabase
+from peewee import SqliteDatabase, OperationalError
 
 def set_db(db_name):
     '''Set the app database'''
@@ -14,14 +14,20 @@ DB = set_db('dc.db')
 
 @APP.before_request
 def db_connect():
-    DB.connect()
+    try:
+        DB.connect()
+    except OperationalError as err:
+        pass
 
 @APP.after_request
 def db_disconnect(response):
-    DB.close()
+    try:
+        DB.close()
+    except:
+        pass
     return response
 
-from adac.data_collector.models import Statistic, Event
+from adac.data_collector.models import Statistic, Event, ConsensusData
 
 @APP.route('/logs/<node>', methods=['GET', 'POST'])
 def logs(node):
@@ -70,9 +76,27 @@ def post_stats():
                          experiment_id=d['experiment_id'])
     return json.dumps({'msg': "Success"})
 
+@APP.route('/message', methods=['POST', 'GET'])
+def show_message():
+    '''Display a message from a node'''
+    data = request.get_json()
+    print('HOST: {} - msg {}'.format(request.remote_addr, data))
+    return json.dumps({'msg': 'success'})
 
+@APP.route("/consensusdata", methods=["POST"])
+def consensus_data():
+    '''Upload Consensus Data'''
+    data = request.get_json()
+    data = json.loads(data)
+    for d in data:
+        ConsensusData.create(node_name=request.remote_addr,
+                             timestamp=d['timestamp'],
+                             data=d['data'],
+                             experiment_id=d['exp_id'])
+    return json.dumps({'msg': 'success'})
 
 def run():
     Statistic.create_table(fail_silently=True)
     Event.create_table(fail_silently=True)
+    ConsensusData.create_table(fail_silently=True)
     APP.run('0.0.0.0', 5000)

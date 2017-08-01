@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 import numpy as np
 import adac.consensus.iterative as consensus
 import adac.nettools as nettools
-from adac.communicator import Communicator
+from adac.communicator import TCPCommunicator
 import requests
 from flask import Flask, request
 from mpi4py import MPI as OMPI
@@ -53,7 +53,6 @@ def data_loader(filename):
 
     return data
 
-
 def get_neighbors():
     '''Gets IP addresses of neigbors for given node
 
@@ -70,7 +69,7 @@ def get_neighbors():
     con.read(CONF_FILE)
     v = json.loads(con['graph']['nodes'])
     e = json.loads(con['graph']['edges'])
-    ip = None
+    ip = None 
     try:
         ip = nettools.get_ip_address(con['network']['iface'])
     except OSError as err:
@@ -115,11 +114,11 @@ def get_indexAndEdges():
         for j in range (len(graph[i])):
             if graph[i][j]==1:
                 if i != j:
-                    edges.append(j+1)
+                    edges.append(j)
                     index_count += 1
         index.append(index_count)
         if edges ==[]:
-            edges.append(1);                                                                                                                                                                                                                                                                                                                                                                                                                                     
+            edges.append(1)
     return index, edges
 
 @APP.route("/start/consensus")
@@ -149,6 +148,8 @@ def run():
     MPI = config['consensus'].getboolean('MPI')
 
     if TASK_RUNNING.value != 1:
+        with open(config['logging']['log_file'], mode='w'):
+            pass
         iterations = 50
         try:
             iterations = int(request.args.get('tc'))
@@ -175,6 +176,13 @@ def run():
 
     return msg
 
+def post_message(msg):
+    global CONF_FILE
+    conf = ConfigParser()
+    conf.read(CONF_FILE)
+    url = conf['collector']['url'] + '/message'
+    requests.post(url, json={ 'message': msg })
+
 def kickoff(task, tc, consensus_id):
     '''The worker method for running distributed consensus.
 
@@ -189,42 +197,53 @@ def kickoff(task, tc, consensus_id):
     global CONF_FILE
     c = None
     neighs = None
+    graph_comm = None
+    finished_consensus = False
     try:
         config = ConfigParser()
         logger.debug('Task was kicked off.')
         config.read(CONF_FILE)
-        port = config['consensus']['port']
-        logger.debug('Communicating on port {}'.format(port))
+        ####### Notify Other Nodes to Start #######
+        port = config['node_runner']['port']
+        post_url = config['collector']['url']
+        logger.debug('Attempting to tell all other nodes in my vicinity to start')
+        neighs = get_neighbors()
+        if neighs is None:
+            logger.warning("No neighbors found - consensus finished")
+        else:
+            for node in neighs:
+                req_url = 'http://{}:{}/start/consensus?tc={}&id={}'.format(node,
+                                                                            port, tc, consensus_id)
+                logger.info('Kickoff URL for node {} is {}'.format(node, req_url))
+                try:
+                    requests.get(req_url, timeout=5)
+                    logger.debug('Made kickoff request')
+                except BaseException as err:
+                    message = "Error requesting {}: {}".format(req_url, err)
+                    post_message(message)
+                    logger.warning(message)
+
         if MPI:
             c = OMPI.COMM_WORLD
             comm = OMPI.Intracomm(c)
              #index and edges returned from function that converts adjacency matrix to MPI syntax
             index, edges = get_indexAndEdges()
             graph = comm.Create_graph(index, edges)
+            graph_comm = graph
             rank = c.Get_rank()
             neighs = graph.Get_neighbors(rank)
             #populate neighs with ranks of neghbor nodes using Graphcomm.get_neighbors()
         else:
-            c = Communicator('tcp', int(port))
+            port = config['consensus']['port']
+            logger.debug('Communicating on port {}'.format(port))
+            c = TCPCommunicator(int(port))
             c.listen()
             logger.debug('Now listening on new TCP port %s', port)
-            neighs = get_neighbors()
-        ####### Notify Other Nodes to Start #######
-        port = config['node_runner']['port']
-        logger.debug('Attempting to tell all other nodes in my vicinity to start')
-
-        if neighs is None:
-            logger.warning("No neighbors found - consensus finished")
-        else:
-            for node in neighs:
-                req_url = 'http://{}:{}/start/consensus?tc={}&id={}'.format(node, port, tc, consensus_id)
-                logger.info('Kickoff URL for node {} is {}'.format(node, req_url))
-                try:
-                    logger.debug("MAKING REUQEST")
-                    requests.get(req_url, timeout=0.1)
-                    logger.debug('Made kickoff request')
-                except:
-                    logger.warning("Could not hit node {} at {}".format(node, req_url))
+            #for neighbor in neighs:
+            #    c.connect(neighbor, timeout=15)
+            #if len(neighs) > len(c.connections):
+            #    logger.error("couldnt make required number of connections")
+            #    raise RuntimeError("unable to connect to all neighbors")
         ########### Run Consensus Here ############
         # Load parameters:
         # Load original data
@@ -232,7 +251,7 @@ def kickoff(task, tc, consensus_id):
         # Pick a tag ID (doesn't matter) --> 1
         # communicator already created
         logger.debug('My neighbors {}'.format(neighs))
-        weights = consensus.get_weights(neighs)
+        weights = consensus.get_weights(neighs, MPI_graph_comm=graph_comm)
         logger.debug('Neighbor weights {}'.format(weights))
         data = data_loader(config['data']['file'])
         logger.debug('Loaded data')
@@ -244,20 +263,33 @@ def kickoff(task, tc, consensus_id):
             logger.info('{}'.format(consensus_data))
             logger.info("~~~~~~~~~~~~~~ CONSENSUS DATA ~~~~~~~~~~~~~~~~")
             logger.debug('Ran consensus')
-        except:
+            if consensus_data is None:
+                logger.warning("Consensus finished with no data")
+                post_message("Consensus finished with no data")
+            else:
+                finished_consensus = True
+        except BaseException as err:
             exc_type, exc_value, exc_traceback = sys.exc_info()
-            # logger.error("Error: {}".format(e))
-            logger.error('Consensus exception %s', repr(traceback.format_tb(exc_traceback)))
+            message = 'Consensus exception {}'.format(repr(traceback.format_tb(exc_traceback)))
+            logger.error(message)
+            logger.error(err)
+            post_message(str(err))
+            #post_message(message)
+            
     except BaseException as err:
-        logger.error('Error while running consensus: %s', err)
+        message = 'Error while running consensus: {}'.format(err)
+        logger.error(message)
+        post_message(message)
         exc_type, exc_value, exc_traceback = sys.exc_info()
-        # logger.error("Error: {}".format(e))
-        logger.error('Consensus exception %s', repr(traceback.format_tb(exc_traceback)))
-    finally:
-        if isinstance(c, Communicator):
-            c.close()
+        msg = 'Consensus exception {}'.format(repr(traceback.format_tb(exc_traceback)))
+        logger.error(msg)
+        #post_message(msg)
+    if isinstance(c, TCPCommunicator):
+        c.close()
 
     try:
+        if finished_consensus == False:
+            raise BaseException("Consensus did not finish - not sending logs.")
         logger.debug('parsing and sending logs as json')
         global config_file
         config = ConfigParser()
@@ -280,13 +312,22 @@ def kickoff(task, tc, consensus_id):
                             'experiment_id': fields[5]}
 
                 stats.append(datadict)
+            elif "consensus_data" in line:
+                fields = line.split('|')
+                #if len(fields) < 7:
+                #    print(fields)
+                ddict = {'timestamp': fields[0], 'data': fields[5], 'exp_id': fields[6]}
+                events.append(ddict)
             else:
                 pass # event
         requests.post(post_url + '/statistics', json=json.dumps(stats))
-
+        requests.post(post_url + '/consensusdata', json=json.dumps(events))
+        requests.post(post_url + '/message', json=json.dumps({'msg': "FINISHED CONSENSUS"}))
     except BaseException as err:
-        logger.info('error when processing log file: %s', str(err))
-
+        message = 'error when processing log file: {}'.format(str(err))
+        logger.warning(message)
+        post_message(message)
+    del c
     with task.get_lock():
         task.value = 0
 
@@ -323,17 +364,19 @@ def start():
     config.read(CONF_FILE)
 
     log_fmt = '%(asctime)s | %(name)s | %(levelname)s | %(message)s | %(id)s'
-    root_level = int(config['logging']['level'])
+    stdout_level = int(config['logging']['level'])
+
     fh = logging.FileHandler(config['logging']['log_file'], mode='w')
-    fh.setLevel(root_level)
+    fh.setLevel(0)
     fh.setFormatter(logging.Formatter(log_fmt))
     fh.addFilter(idfilt)
+
     logging.basicConfig(handlers=[fh])
     root = logging.getLogger()
-    root.setLevel(root_level)
+    root.setLevel(0)
 
     ch = logging.StreamHandler(sys.stdout)
-    ch.setLevel(root_level)
+    ch.setLevel(stdout_level)
     formatter = logging.Formatter(log_fmt)
     ch.setFormatter(formatter)
     ch.addFilter(idfilt)
@@ -344,8 +387,3 @@ def start():
 
 if __name__ == "__main__":
     start()
-
-
-
-
-

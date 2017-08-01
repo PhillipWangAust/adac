@@ -18,6 +18,12 @@ class BaseModel(Model):
                 r[k] = json.dumps(getattr(self, k))
         return str(r)
 
+class ConsensusData(BaseModel):
+    node_name = CharField()
+    timestamp = DateTimeField()
+    data = CharField()
+    experiment_id = CharField()
+
 
 class Event(BaseModel):
 

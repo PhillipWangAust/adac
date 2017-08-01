@@ -9,6 +9,7 @@ import socket
 import struct
 import threading
 import collections
+import time
 
 
 TAG_SIZE = 4
@@ -46,7 +47,7 @@ def check_port(port):
         port (int): The port number. ValueError raised if it is not an int.
 
     Returns:
-        bool: Only will return True. Anything invalid will result in a ValueError
+        int: returns the port number if valid, otherwise an error is raised
 
     '''
     if isinstance(port, int) is not True:  # Ensure we're dealing with real ports
@@ -54,7 +55,7 @@ def check_port(port):
     elif port < 0 or port > 65535:
         raise ValueError("port must be between 0 and 65535")
     else:
-        return True
+        return port
 
 
 def get_payload(payload):
@@ -111,15 +112,16 @@ def build_meta_packet(seq_num, seq_total, tag):
 
 def recv_n_bytes(conn, num):
     '''Get a set number of bytes from a TCP connection
+
     Args:
         conn (socket): A connected TCP socket
         num (int): Number of bytes to read
 
     Returns:
-        bytes: a bytes object containing the data read.
+        bytes: a bytes object containing the data read. None if num < 0
     '''
     if num < 0:
-        return None
+        raise ValueError("conn {} request {} bytes. Bytes must be > 0".format(conn, num))
     bytes_left = num
     msg_b = b''
     while len(msg_b) < num:
@@ -131,13 +133,368 @@ def recv_n_bytes(conn, num):
             msg_b += bts
             bytes_left -= len(bts)
         except socket.timeout as err:
-            # Socket timed out - log an error eventually
-            # logger.debug('socket timed out recv_n_bytes. %s', str(err))
+            # Socket timed out waiting for bytes
             pass
+        except OSError as err:
+            # Socket timed out - log an error eventually
+            logger.info('recv_n_bytes: %s', str(err))
+            return None
     return msg_b
 
+class BaseCommunicator(object):
+    '''Communicators send and receive data with a specific "tag" and store it until a user
+    retrieves it.
 
-class Communicator:
+    Lifetime: listen -> send -> get -> close
+
+    Possible to simply just send -> get, however you won't be able to receive connection
+    attempts from other hosts
+
+    '''
+
+    def __init__(self, port):
+        self.connections = {}
+        self.data_store = {}
+        self.listen_thread = None
+        self.listen_sock = None
+        self.port = check_port(port)
+
+        self.is_listening = False
+        self.recv_callback = None
+
+        self.conn_lock = threading.Lock()
+        self.data_lock = threading.Lock()
+
+    def send(self, addr, data, tag):
+        '''Sends a message of bytes to addr with a tag identifier'''
+        raise NotImplementedError("Can't use base communicator object. Use UDP or TCP")
+
+    def listen(self):
+        '''Listen for incoming messages or connection requests'''
+        raise NotImplementedError("Can't use BaseCommunicator. Use UDP or TCP.")
+
+    def receive(self):
+        '''Take a piece of data which was received and process it into a message'''
+        raise NotImplementedError()
+
+    def close(self):
+        '''Close all the communicator sockets'''
+        raise NotImplementedError("Can't use BaseCommunicator. Use UDP or TCP.")
+
+    def get(self, ip_addr, tag):
+        '''Get a key/tag value from the data store.
+
+        The data is only going to be located in the data store if every single packet for the given
+        tag was received and able to be reassembled. Otherwise the incomplete data will reside
+        in ``self.tmp_data``.
+
+        The ``self.data_store`` object has the following structure:
+
+        .. code-block:: javascript
+
+            {
+                ip_address: {
+                    tag_1: data,
+                    tag_2: data2
+                }
+            }
+
+
+        Args:
+            ip (str): The ip address of the host we wish get data from
+            tag (bytes/bytearray): The data tag for the message which is being received
+
+        Returns:
+            bytes: ``None`` if complete data is not found, Otherwise if found will return the data
+
+        '''
+        data = None
+        tg_int = int.from_bytes(tag, byteorder='little')
+        if ip_addr not in self.data_store:
+            data = None
+        elif tg_int not in self.data_store[ip_addr]:
+            data = None
+        else:
+            self.data_lock.acquire()
+            data = self.data_store[ip_addr][tg_int]
+            self.data_store[ip_addr][tg_int] = None
+            self.data_lock.release()
+        return data
+
+    def register_recv_callback(self, callback):
+        '''Allows one to register a callback function which is executed whenever a
+        full message is received and decoded.
+
+        The callback must have the signature of ``(str, bytes, bytes)`` where ``str`` is the sender
+        address. The first ``bytes`` is the tag. The second ``bytes`` is the data.
+
+        Args:
+            callback (func): A function with arguments of (sender, tag, data)
+
+        Returns:
+            N/A
+        '''
+        if isinstance(callback, collections.Callable) is not True:
+            raise TypeError("Callback must be a function")
+        fullspec = inspect.getfullargspec(callback)
+        n_args = len(fullspec[0])
+        if n_args != 3:
+            raise ValueError("Callback function did not have 3 arguments.")
+        self.recv_callback = callback
+
+
+class TCPCommunicator(BaseCommunicator):
+    '''Communicators send and receive data with a specific "tag" and store it until a user
+    retrieves it.
+
+    Lifetime: listen -> send -> get -> close
+
+    Possible to simply just send -> get, however you won't be able to receive connection
+    attempts from other hosts
+
+    '''
+
+    def __init__(self, port):
+        super().__init__(port)
+
+    def connect(self, ip_addr, timeout=None):
+        '''Connect to a TCP socket at ip_addr using the send_port.
+
+        The connection of addr will be put into the internal connections dictionary. When the next
+        tcp_send call is initiated a new thread will start reading messages from the connection
+
+        The call will block until timeout seconds have passed. A socket.TimeoutError will be
+        raised if the connection is not successful. Otherwise if timeout is None the call
+        will block indefinitely until a connection has been made.
+
+        Args:
+            ip_addr (str): The IP to connect to on self.send_port
+            timeout (float): Number of seconds to wait before timing out the connection.
+
+        Returns: N/A
+        '''
+        conn = None
+        # Work until we hit the timeout
+        self.conn_lock.acquire()
+        if ip_addr in self.connections:
+            self.conn_lock.release()
+            logger.warning('Attempting to make a connection to %s which already exists.', ip_addr)
+            return
+        self.conn_lock.release()
+
+        msg = None
+        if timeout is None:
+            while conn is None:
+                try:
+                    conn = socket.create_connection((ip_addr, self.port))
+                except socket.timeout as err:
+                    pass
+                except OSError as err:
+                    msg = "Got {} while trying to connect() to {}".format(err, ip_addr)
+        else:
+            time_start = time.time()
+            while time.time() - time_start < timeout and conn is None:
+                try:
+                    conn = socket.create_connection((ip_addr, self.port), timeout=timeout)
+                except BaseException as err:
+                    msg = str(err)
+
+        if msg is not None:
+            logger.info("Exception trying to connect to %s with err %s", ip_addr, msg)
+
+        self.conn_lock.acquire()
+        if conn is not None and ip_addr not in self.connections: # Brand new
+            self.connections[ip_addr] = conn
+            conn_thread = threading.Thread(target=self._run_connect, args=(conn, ip_addr))
+            conn_thread.start()
+        elif conn is not None and ip_addr in self.connections: # Already existing
+            logger.warning("Connect to ip %s requested but connection already existed", ip_addr)
+            conn.close()
+        else:
+            self.conn_lock.release() # Release here because we raise an exception
+            raise ConnectionError('Unable to connect to {}'.format(ip_addr))
+        self.conn_lock.release()
+
+    def send(self, addr, data, tag):
+        '''Sends data to specified hosts
+
+        Args:
+            addrs (str): IPv4 Address to send to
+            data (bytes): Data to send
+            tag (bytes): Message identifier. Will take up to first 4 bytes
+
+        '''
+        # Create the packet with tag at the top
+        msg = bytearray()
+        msg += tag[0:4]
+        msg += data
+        mlen = len(msg) # msg length
+        msg = struct.pack('!I', mlen) + msg # prepend message length to data
+        self._attempt_send_data(addr, msg, timeout=15)
+
+    def listen(self):
+        '''Start listening on port ``self.port``. Creates a new thread where the socket will
+        listen for incoming data
+        '''
+        if self.is_listening is True:
+            raise RuntimeError('Cannot listen. Socket already listening.')
+
+        if self.listen_thread is None:  # Create thread if not already created
+            self.listen_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.listen_thread = threading.Thread(target=self._run_tcp,
+                                                  args=(self.listen_sock, '0.0.0.0',
+                                                        self.port))
+
+            self.is_listening = True
+            self.listen_thread.start()
+
+    def close(self):
+        logger.debug('Close requested on communicator %s', self)
+        if self.listen_thread != None:
+            self.is_listening = False
+            self.listen_thread.join()
+            self.listen_thread = None
+        try:
+            self.listen_sock.close()
+        except BaseException as err:
+            logger.debug('exception closing listening socket: %s', err)
+
+        self.conn_lock.acquire()
+        for addr in self.connections:
+            try:
+                self.connections[addr].close()
+            except BaseException as err:
+                logger.debug('Closing %s, Error: %s', addr, err)
+        self.connections = {}
+        self.conn_lock.release()
+        # raise NotImplementedError("Can't use BaseCommunicator. Use UDP or TCP.")
+
+    def _run_tcp(self, _sock, host, port):
+        '''Method which accepts TCP connections and passes them off to run_connect
+
+        Args:
+            _sock (sockets.socket): A socket object to bind to
+            host (str): The hostname/IP that we should bind the socket to. Use empty string '' for
+            senders who wish to contact you outside the network.
+            port (int): The port as an integer
+        '''
+        _sock.settimeout(1.5)
+        _sock.bind((host, port))
+        # Accept maximum of three un-accepted conns before refusing
+        _sock.listen(3)
+        while self.is_listening:
+            try:
+                conn, addr = _sock.accept()
+                #logger.info('Accepted new socket connection to %s', str(addr[0]))
+                self.conn_lock.acquire()
+                if addr[0] not in self.connections:
+                    self.connections[addr[0]] = conn
+                    thd = threading.Thread(target=self._run_connect,
+                                           args=(conn, addr[0]))
+                    thd.start()
+                else:
+                    logger.debug('Got new connection which was already present from %s', addr)
+                    conn.close()
+                self.conn_lock.release()
+            except socket.timeout:
+                pass
+                # logger.debug('__run_tcp__, connection accept timeout: %s', err)
+        logger.debug('Listening thread exiting')
+
+    def _run_connect(self, connection, addr):
+        '''Worker methods which receive data from TCP connections.
+
+        Must be able to convert TCP byte streams into individual messages. In order to accomplish
+        this we used a message-length prefixing strategy. Every message sent from the other end of
+        the wire is required to prefix a 4-byte message length to the very front of every message.
+        This allows us to 'chunk' the messages and read only the necessary bytes. If an invalid
+        message length arrives then we close the socket connection and log an error.
+
+        Args:
+            connection (connection): A TCP connection from socket.accept()
+            addr (str): The Inet(6) address representing the address of the client
+        '''
+
+        while self.is_listening:
+            try:
+                # Get message length
+                len_b = recv_n_bytes(connection, 4)
+                if len_b is None:
+                    break
+                m_len = struct.unpack('!I', len_b)[0]
+                if m_len < 0:
+                    # Log an error, close connection
+                    logger.warning("msg len < 0")
+                    break
+                msg_data = recv_n_bytes(connection, m_len)
+                if msg_data is not None:
+                    self.receive_tcp(msg_data, addr)
+                else:
+                    logger.warning("msgdata is None")
+                    break # Close connection if returned None
+
+            except socket.timeout as err:
+                pass
+            except OSError as err:
+                logger.warning('OSError on _run_tcp: %s', err)
+                break
+
+        self.conn_lock.acquire()
+        self.connections.pop(addr, None)  # Remove the connection
+        logger.debug("Popped connection with addr %s", addr)
+        self.conn_lock.release()
+        try:
+            connection.close()
+        except OSError as err:
+            logger.debug('_run_connect, error closing TCP socket: %s', err)
+        return
+
+    def receive_tcp(self, data, addr):
+        '''Stores the TCP data reveived into the data store
+
+        Args:
+            data (bytes) : The data to store.
+            addr (str): The ip address of the node.
+
+        '''
+        if len(data) < 4:
+            # Log error on data
+            return
+        data_tag = int.from_bytes(data[:4], byteorder='little')
+        dat = data[4:]
+
+        self.data_lock.acquire()
+        if addr not in self.data_store:
+            self.data_store[addr] = {}
+        self.data_store[addr][data_tag] = dat
+        self.data_lock.release()
+        logger.debug('Stored data at [%s][%s]', addr, data_tag)
+        if self.recv_callback != None:
+            # run a callback on the newly collected data.
+            self.recv_callback(addr, data_tag, dat)
+        return
+
+    def _attempt_send_data(self, addr, msg, timeout=None):
+        with self.conn_lock:
+            if addr in self.connections:
+                self.connections[addr].sendall(msg)
+                return
+
+        try:
+            self.connect(addr, timeout=timeout)
+            # addr should now be in connections if connect() was successful
+            with self.conn_lock:
+                conn_sock = self.connections[addr]
+                conn_sock.sendall(msg)
+            logger.debug('Successfully transmitted data to %s', addr)
+        except OSError as err:
+            # Log message about how unable to send
+            exception = 'Unable to send data to {}. Error: {}'.format(addr, err)
+            logger.error(exception)
+            raise RuntimeError(exception)
+
+
+class UDPCommunicator(BaseCommunicator):
     '''This is a threaded class interface designed to send and receive messages
      'asynchronously' via python's threading interface. It was designed mainly
       designed for use in communication for the algorithm termed 'Cloud K-SVD'.
@@ -196,85 +553,11 @@ class Communicator:
 
     '''
 
-    def __init__(self, protocol, listen_port, send_port=None):
-        '''Constructor'''
-        protocol = protocol.upper()
-        if protocol not in ['TCP', 'UDP']:
-            raise ValueError('Protocol must be one of TCP or UDP')
-
-        if protocol == 'TCP':
-            self.protocol = TCP  # The protocol an upper case string 'TCP' or 'UDP'
-        else:
-            self.protocol = UDP
-
-        # Check and create sockets
-        if send_port is not None and check_port(send_port):
-            self.send_port = send_port
-            if self.protocol == TCP:
-                self.send_sock = socket.socket(
-                    socket.AF_INET, socket.SOCK_STREAM)
-                self.send_sock.setblocking(False)
-            else:
-                self.send_sock = socket.socket(
-                    socket.AF_INET, socket.SOCK_DGRAM)
-
-        if check_port(listen_port):
-            self.listen_port = listen_port
-            if self.protocol == TCP:
-                self.listen_sock = socket.socket(
-                    socket.AF_INET, socket.SOCK_STREAM)
-            else:
-                self.listen_sock = socket.socket(
-                    socket.AF_INET, socket.SOCK_DGRAM)
-
-            self.send_port = self.listen_port
-            if send_port is None and self.protocol == UDP:  # If the port and socket were not set
-
-                self.send_sock = socket.socket(
-                    socket.AF_INET, socket.SOCK_DGRAM)
-            elif send_port is None and self.protocol == TCP:  # If the port and socket were not set
-                self.send_sock = socket.socket(
-                    socket.AF_INET, socket.SOCK_STREAM)
-                self.send_sock.setblocking(False)
-
-        # Set to nonblocking in order to get our threaded server to work :) (We
-        # should investigate the performance impact of this)
-        if self.protocol == UDP:
-            self.listen_sock.setblocking(False)
-        # Set the defaults for the thread and listening object
-        self.is_open = True
-        self.listen_thread = None
-        # This tells the listening thread whether or not it need to continue
-        # looping to receive messages
-        self.connections = {}
-        self.is_listening = False
+    def __init__(self, port):
+        '''Constructor calls BaseCommunicator constructor and sets up tmp data store'''
         self.tmp_data = {}
-        self.data_store = {}
-        self.mtu = get_mtu()
-        self.recv_callback = None
-        self.conn_lock = threading.Lock()
-        self.data_store_lock = threading.Lock()
-
-    def register_recv_callback(self, callback):
-        '''Allows one to register a callback function which is executed whenever a
-        full message is received and decoded.
-
-        The callback must have the signature of ``(str, bytes, bytes)`` where ``str`` is the sender
-        address. The first ``bytes`` is the tag. The second ``bytes`` is the data.
-
-        Args:
-            callback (func): A function with arguments of (sender, tag, data)
-
-        Returns:
-            N/A
-        '''
-        if isinstance(callback, collections.Callable) is not True:
-            raise TypeError("Callback must be a function")
-        fullspec = inspect.getfullargspec(callback)
-        n_args = len(fullspec[0])
-        if n_args != 3:
-            raise ValueError("Callback function did not have 3 arguments.")
-        self.recv_callback = callback
+        self.send_sock = None
+        super().__init__(port)
 
     def close(self):
         '''Closes both listening sockets and the sending sockets
@@ -287,35 +570,29 @@ class Communicator:
         Returns:
             N/A
 
-        Raises:
-            BrokenPipeError: If close was already called previously.
-
         '''
         logger.debug('Close requested on communicator %s', self)
-        if self.is_open is True:
-            self.stop_listen()
-            try:
-                self.listen_sock.close()
-            except:
-                logger.debug('exception closing listening socket')
+        if self.is_listening is True:
+            if self.listen_thread != None:
+                self.is_listening = False
+                self.listen_thread.join()
+                self.listen_thread = None
+        # On a close, we can still send afterwards, but we never receive anything
+        try:
+            self.listen_sock.close()
+        except BaseException as err:
+            logger.debug('exception closing listening socket: %s', err)
 
-            try:
-                self.send_sock.close()
-            except:
-                logger.debug('exception closing sending socket')
-            for addr in self.connections:
-                try:
-                    self.connections[addr].close()
-                except:
-                    logger.debug('exception TCP connection from addr %s', addr)
-            self.connections = {}
-            self.is_open = False
-        else:
-            raise BrokenPipeError(
-                'Cannot close. Sockets were previously closed.')
+        try:
+            self.send_sock.close()
+        except BaseException as err:
+            logger.debug('exception closing sending socket: %s', err)
+
+        self.send_sock = None
+        self.listen_sock = None
 
     def listen(self):
-        '''Start listening on port ``self.listen_port``. Creates a new thread where the socket will
+        '''Start listening on port ``self.port``. Creates a new thread where the socket will
         listen for incoming data
 
         Args:
@@ -325,101 +602,19 @@ class Communicator:
             N/A
 
         '''
-        if self.is_open != True:
-            raise BrokenPipeError(
-                'Cannot listen. Sockets were previously closed.')
-
         if self.listen_thread is None:  # Create thread if not already created
-            if self.protocol is UDP:
-                self.listen_thread = threading.Thread(target=self.__run_listen__,
-                                                      args=(self.listen_sock, '0.0.0.0',
-                                                            self.listen_port))
-            else:
-                self.listen_thread = threading.Thread(target=self.__run_tcp__,
-                                                      args=(self.listen_sock, '0.0.0.0',
-                                                            self.listen_port))
+            self.listen_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            # Set to nonblocking in order to get our threaded server to work :) (We
+            # should investigate the performance impact of this)
+            self.listen_sock.setblocking(False)
+            self.listen_thread = threading.Thread(target=self._run_listen,
+                                                  args=(self.listen_sock, '0.0.0.0',
+                                                        self.port))
 
             self.is_listening = True
             self.listen_thread.start()
 
-    def __run_connect__(self, connection, addr):
-        '''Worker methods which receive data from TCP connections.
-
-        Must be able to convert TCP byte streams into individual messages. In order to accomplish
-        this we used a message-length prefixing strategy. Every message sent from the other end of
-        the wire is required to prefix a 4-byte message length to the very front of every message.
-        This allows us to 'chunk' the messages and read only the necessary bytes. If an invalid
-        message length arrives then we close the socket connection and log an error.
-
-        Args:
-            connection (connection): A TCP connection from socket.accept()
-            addr (str): The Inet(6) address representing the address of the client
-        '''
-
-        while self.is_listening:
-            try:
-                # Get message length
-                len_b = recv_n_bytes(connection, 4)
-                if len_b is None:
-                    break
-                m_len = struct.unpack('!I', len_b)[0]
-                if m_len < 0:
-                    # Log an error, close connection
-                    break
-                msg_data = recv_n_bytes(connection, m_len)
-                if msg_data is not None:
-                    self.receive_tcp(msg_data, addr)
-                else:
-                    break # Close connection if returned None
-
-            except socket.timeout as err:
-                # logger.debug('__run_connect__ socket timed out listening for data')
-                pass
-            except OSError as err:
-                logger.warning('OSError on __run_tcp__: %s', err)
-                break
-
-        self.conn_lock.acquire()
-        self.connections.pop(addr, None)  # Remove the connection
-        self.conn_lock.release()
-        try:
-            connection.close()
-        except OSError as err:
-            logger.debug('__run_sonnect__, error closing TCP socket: %s', err)
-        return
-
-    def __run_tcp__(self, _sock, host, port):
-        '''Method which accepts TCP connections and passes them off to run_connect
-
-
-        Args:
-            _sock (sockets.socket): A socket object to bind to
-            host (str): The hostname/IP that we should bind the socket to. Use empty string '' for
-            senders who wish to contact you outside the network.
-            port (int): The port as an integer
-        '''
-        _sock.settimeout(1.5)
-        _sock.bind((host, port))
-        # Accept maximum of three un-accepted conns before refusing
-        _sock.listen(3)
-        threads = []
-        while self.is_listening:
-            try:
-                conn, addr = _sock.accept()
-                logger.info('Accepted new socket connection to %s', str(addr[0]))
-                self.conn_lock.acquire()
-                self.connections[addr[0]] = conn
-                self.conn_lock.release()
-                thd = threading.Thread(target=self.__run_connect__,
-                                       args=(conn, addr[0]))
-                threads.append(thd)
-                thd.start()
-            except socket.timeout as err:
-                pass
-                # logger.debug('__run_tcp__, connection accept timeout: %s', err)
-        logger.debug('Listening thread exiting')
-
-    def __run_listen__(self, _sock, host, port):
+    def _run_listen(self, _sock, host, port):
         '''Worker method for the threaded listener in order to retrieve incoming messages
 
         Args:
@@ -432,8 +627,13 @@ class Communicator:
             N/A
 
         '''
-
-        _sock.bind((host, port))
+        try:
+            _sock.bind((host, port))
+        except BaseException as err:
+            logger.warning("Could not bind to %s:%s, Got %s", host, port, err)
+            _sock.close()
+            self.close()
+            return
 
         while self.is_listening:
             try:
@@ -484,7 +684,7 @@ class Communicator:
             destination.
         '''
         packets = []
-        max_payload = self.mtu - 68  # conservative estimate to prevent IP fragmenting on UDP
+        max_payload = get_mtu() - 68  # conservative estimate to prevent IP fragmenting on UDP
         metadata_size = 8  # 8 bytes
         data_size = len(data)
         max_data = max_payload - metadata_size
@@ -515,47 +715,6 @@ class Communicator:
 
         return packets
 
-    def __attempt_send_data__(self, addr, msg):
-        if addr in self.connections:
-            self.connections[addr].sendall(msg)
-        else:
-            try:
-                conn_sock = socket.socket(
-                    socket.AF_INET, socket.SOCK_STREAM)
-                conn_sock.connect((addr, self.send_port))
-                conn_thread = threading.Thread(target=self.__run_connect__,
-                                               args=(conn_sock, addr))
-                self.conn_lock.acquire()
-                # This is ok b/c thread doesn't start yet.
-                self.connections[addr] = conn_sock
-                self.conn_lock.release()
-                conn_sock.sendall(msg)
-                logger.debug('Successfully transmitted data to %s', addr)
-                conn_thread.start()
-            except OSError as err:
-                # Log message about how unable to send
-                logger.warning('Unable to send data to %s. Error: %s', addr, err)
-                pass
-
-    def tcp_send(self, addr, data, tag):
-        '''Sends data to specified hosts
-
-        Args:
-            addrs (str): IPv4 Address to send to
-            data (bytes): Data to send
-            tag (bytes): Message identifier
-
-        '''
-        # Create the packet with tag at the top
-        msg = bytearray()
-        msg += tag
-        msg += data
-        mlen = len(msg) # msg length
-        msg = struct.pack('!I', mlen) + msg # prepend message length to data
-        thd = threading.Thread(target=self.__attempt_send_data__,
-                               args=(addr, msg))
-        thd.start()
-
     def send(self, ip_addr, data, tag):
         '''Send a chunk of data with a specific tag to an ip address. The packet will be
         automatically chunked into N packets where N = ceil(bytes/(MTU-68))
@@ -563,24 +722,22 @@ class Communicator:
         Args:
             ip (str): The hostname/ip to send to
             data (bytes): The bytes of data which will be sent to the other host.
-            tag (str): An identifier for the message
+            tag (bytes): An identifier for the message
 
         Returns:
             bool: True if all packets were created and sent successfully.
         '''
-
+        if self.send_sock is None:
+            self.send_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         # As simple as just creating the packets and sending each one
         # individually
-        if self.is_open != True:
-            raise BrokenPipeError('Socket was already closed by user')
-
         ret = True
         packets = self.create_packets(data, tag)
         # logger.debug("Sending {} packet(s) to {}".format(len(packets), ip))
         for packet in packets:
             # logger.debug('Sending packet to IP: {} on port {}'.format(ip, self.send_port))
             try:
-                if self.send_sock.sendto(packet, (ip_addr, self.send_port)) < 0:
+                if self.send_sock.sendto(packet, (ip_addr, self.port)) < 0:
                     logger.debug("Some packets were not sent successfully")
                     ret = False
 
@@ -589,90 +746,6 @@ class Communicator:
                 logger.warning(str(err))
                 break
         return ret
-
-    def get(self, ip_addr, tag):
-        '''Get a key/tag value from the data store.
-
-        The data is only going to be located in the data store if every single packet for the given
-        tag was received and able to be reassembled. Otherwise the incomplete data will reside
-        in ``self.tmp_data``.
-
-        The ``self.data_store`` object has the following structure:
-
-        .. code-block:: javascript
-
-            {
-                ip_address: {
-                    tag_1: data,
-                    tag_2: data2
-                }
-            }
-
-
-        Args:
-            ip (str): The ip address of the host we wish get data from
-            tag (bytes/bytearray): The data tag for the message which is being received
-
-        Returns:
-            bytes: ``None`` if complete data is not found, Otherwise if found will return the data
-
-        '''
-        data = None
-        tg_int = int.from_bytes(tag, byteorder='little')
-        if ip_addr not in self.data_store:
-            data = None
-        elif tg_int not in self.data_store[ip_addr]:
-            data = None
-        else:
-            self.data_store_lock.acquire()
-            data = self.data_store[ip_addr][tg_int]
-            self.data_store[ip_addr][tg_int] = None
-            self.data_store_lock.release()
-        return data
-
-    def stop_listen(self):
-        '''Stop listening for new messages and close the socket.
-
-        This will terminate the thread and join it back in.
-
-        Args:
-            N/A
-
-        Returns:
-            N/A
-
-        '''
-        if self.listen_thread != None:
-            self.is_listening = False
-            self.listen_thread.join()
-            self.listen_thread = None
-
-    def receive_tcp(self, data, addr):
-        '''Stores the TCP data reveived into the data store
-
-        Args:
-            data (bytes) : The data to store.
-            addr (str): The ip address of the node.
-
-        '''
-        if len(data) < 4:
-            # Log error on data
-            return
-        data_tag = int.from_bytes(data[:4], byteorder='little')
-
-        if addr not in self.data_store:
-            self.data_store_lock.acquire()
-            self.data_store[addr] = {}
-            self.data_store_lock.release()
-
-        self.data_store_lock.acquire()
-        self.data_store[addr][data_tag] = data[4:]
-        self.data_store_lock.release()
-        logger.debug('Stored data at [%s][%s]', addr, data_tag)
-        if self.recv_callback != None:
-            # run a callback on the newly collected data.
-            self.recv_callback(addr, data_tag, data[4:])
-        return
 
     def receive(self, data, addr):
         '''Take a piece of data received over the socket and processes the data and attempt to
@@ -744,10 +817,10 @@ class Communicator:
             if addr not in self.data_store:
                 self.data_store[addr] = {}
             logger.debug("Adding reassmbled packet to data store with IP %s and tag %s",
-                          addr, data_tag)
-            self.data_store_lock.acquire()
+                         addr, data_tag)
+            self.data_lock.acquire()
             self.data_store[addr][data_tag] = reassembled
-            self.data_store_lock.release()
+            self.data_lock.release()
             if self.recv_callback != None:
                 # run a callback on the newly collected packets.
                 self.recv_callback(addr, data_tag, reassembled)
