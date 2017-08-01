@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 '''Run with flask as an HTTP server to communicate starting points of CloudK-SVD and Consensus
 '''
 import json

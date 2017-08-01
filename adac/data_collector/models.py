@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 '''Data Models to Store'''
 import json
 from adac.data_collector import DB

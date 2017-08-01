@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 import json
 import random
 import struct
@@ -378,9 +379,3 @@ class TCPCommTest(unittest.TestCase):
             msg = comm.recv_n_bytes(_sock, 4)
             self.assertEqual(struct.unpack('!I', msg)[0], 512)
             _sock.close()
-
-
-
-
-
-

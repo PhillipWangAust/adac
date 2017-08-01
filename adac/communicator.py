@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 '''Communicator which handles UDP/TCP communication
 
 '''

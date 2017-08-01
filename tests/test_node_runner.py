@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 
 import tempfile
 import os
@@ -101,5 +102,3 @@ class test_node_runner(unittest.TestCase):
             self.assertEqual(i[x], index[x])
         for y in range(len(edges)):
             self.assertEqual(e[y], edges[y])
-
-

@@ -19,13 +19,14 @@ import numpy as np
 from numpy import linalg as LA
 import psutil
 from adac.data_collector.util_logger import psLogger
+from mpi4py import MPI as OMPI
 
 # Consensus Functions
 plogger = psLogger('.'.join([__name__, 'psutil']))
 logger = logging.getLogger(__name__)
 MPI = False
 
-def get_weights(neighbors, config="params.conf"):
+def get_weights(neighbors, config="params.conf", MPI_graph_comm=None):
     '''Calculate the Metropolis Hastings weights for the current node and its neighbors.
 
     Args:
@@ -35,6 +36,8 @@ def get_weights(neighbors, config="params.conf"):
             dict: a dictionary mapping neighbors to Metropolis-Hastings Weights
 
     '''
+    if neighbors is None:
+        return {}
     weights = {}
     degs = {}
     conf = configparser.ConfigParser()
@@ -42,20 +45,26 @@ def get_weights(neighbors, config="params.conf"):
     port = conf['node_runner']['port']
     my_deg = len(neighbors)
     for neigh in neighbors:
-        r_url = 'http://{}:{}/degree?host={}'.format(neigh, port, neigh)
-        logger.debug('Attempting to get degree of node {}'.format(neigh))
-        logger.debug('Degree request URL {}'.format(r_url))
-        try:
-            res = requests.get(r_url, timeout=0.5)
 
-            if res.status_code == 200:
-                degs[neigh] = int(res.text)
-                weights[neigh] = 1 / (max(degs[neigh], my_deg) + 1)
-            else:
+        if MPI_graph_comm is None:
+            r_url = 'http://{}:{}/degree?host={}'.format(neigh, port, neigh)
+            logger.debug('Attempting to get degree of node {}'.format(neigh))
+            logger.debug('Degree request URL {}'.format(r_url))
+            try:
+                res = requests.get(r_url, timeout=0.5)
+
+                if res.status_code == 200:
+                    degs[neigh] = int(res.text)
+                    weights[neigh] = 1 / (max(degs[neigh], my_deg) + 1)
+                else:
+                    weights[neigh] = 0
+                    raise RuntimeError("One of the nodes could not be contacted")
+            except:
                 weights[neigh] = 0
-                raise RuntimeError("One of the nodes could not be contacted")
-        except:
-            weights[neigh] = 0
+        else:
+            degs[neigh] = len(MPI_graph_comm.Get_neighbors(neigh))
+            weights[neigh] = 1 / (max(degs[neigh], my_deg) + 1)
+
     return weights
 
 
@@ -158,7 +167,7 @@ def transmit(data, tag, neighbors, communicator):
     if MPI:
         #  Send with MPI
         for n in neighbors:
-            communicator.send(data, n, int.from_bytes(tag, byteorder='little'))
+            communicator.send(data, n, tag=int.from_bytes(tag, byteorder='little'))
     else:
         for n in neighbors:
             logger.debug('Consensus transmitting data to neighbor {} with tag {}'.format(n, tag))
@@ -179,7 +188,7 @@ def receive(tag, neighbors, communicator):
     data = {}
     if MPI:
         for n in neighbors:
-            rectemp = comm.irecv(n, int.from_bytes(tag, byteorder="little"))
+            rectemp = communicator.recv(source=n, tag=int.from_bytes(tag, byteorder="little"))
             data[n] = rectemp
     else:
         for n in neighbors:
