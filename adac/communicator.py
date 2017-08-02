@@ -1,4 +1,4 @@
-<<<<<<< HEAD
+
 '''Communicator which handles UDP/TCP communication
 
 '''
@@ -325,6 +325,12 @@ class TCPCommunicator(BaseCommunicator):
             tag (bytes): Message identifier. Will take up to first 4 bytes
 
         '''
+        if not isinstance(tag, bytes):
+            raise TypeError("tag must be bytes")
+        if not isinstance(data, bytes):
+            raise TypeError("data must be bytes")
+        if len(tag) < 4:
+            raise ValueError("tag must be at least 4 bytes")
         # Create the packet with tag at the top
         msg = bytearray()
         msg += tag[0:4]
@@ -476,6 +482,15 @@ class TCPCommunicator(BaseCommunicator):
         return
 
     def _attempt_send_data(self, addr, msg, timeout=None):
+        '''Perform an attempt at sending data to the specified address
+
+        First we check if we can access the connection in our current connections list.
+
+        Args:
+            add (str): The IP address to send to
+            msg (bytes): The message in bytes to send
+            timeout (i)
+        '''
         with self.conn_lock:
             if addr in self.connections:
                 self.connections[addr].sendall(msg)
@@ -686,7 +701,7 @@ class UDPCommunicator(BaseCommunicator):
         '''
         packets = []
         max_payload = get_mtu() - 68  # conservative estimate to prevent IP fragmenting on UDP
-        metadata_size = 8  # 8 bytes
+        metadata_size = 8  # 8 bytes constant
         data_size = len(data)
         max_data = max_payload - metadata_size
 
@@ -728,6 +743,13 @@ class UDPCommunicator(BaseCommunicator):
         Returns:
             bool: True if all packets were created and sent successfully.
         '''
+        if not isinstance(tag, bytes):
+            raise TypeError("tag must be bytes")
+        if not isinstance(data, bytes):
+            raise TypeError("data must be bytes")
+        if len(tag) < 4:
+            raise ValueError("tag must be at least 4 bytes")
+
         if self.send_sock is None:
             self.send_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         # As simple as just creating the packets and sending each one

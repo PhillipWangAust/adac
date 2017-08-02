@@ -1,4 +1,4 @@
-<<<<<<< HEAD
+
 '''Upload data from experiments where the logs can be viewed and stored
 '''
 import json

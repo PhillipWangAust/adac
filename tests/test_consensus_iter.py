@@ -1,11 +1,11 @@
-<<<<<<< HEAD
+
 import unittest
 import pickle
 import numpy as np
 
 import adac.nettools as nettools
 from adac.consensus import iterative as consensus
-from adac.communicator import Communicator
+from adac.communicator import UDPCommunicator as Communicator
 from unittest.mock import MagicMock, patch
 
 
@@ -34,7 +34,7 @@ class ConsensusTest(unittest.TestCase):
         arr[0][1] = 17
         arr[1][0] = 8
         arr[1][1] = 35
-        comm = Communicator('udp', 12309)
+        comm = Communicator(12309)
         consensus_results = consensus.run(arr, 50, 12, {'local': 1/3, 'local2': 1/3}, comm)
         is_none = consensus_results is None
         self.assertNotEqual(is_none, None, 'Should be able to get results')

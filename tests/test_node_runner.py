@@ -1,4 +1,4 @@
-<<<<<<< HEAD
+
 
 import tempfile
 import os
@@ -58,14 +58,15 @@ class test_node_runner(unittest.TestCase):
     @mock.patch('adac.runner.data_loader', return_value=MagicMock())
     @mock.patch('adac.nettools.get_ip_address', return_value='192.168.2.180')
     @mock.patch('adac.consensus.iterative.get_weights', return_value={'192.168.2.183': 0.5})
+    @mock.patch('requests.post')
     @mock.patch('requests.get')
     @mock.patch('time.sleep')
-    def test_kickoff(self, mock2, mock1, mock3, mock4, mock5):
+    def test_kickoff(self, mock2, mock1, mock3, mock4, mock5, mock6):
         consensus.run = MagicMock()
         task = n.TASK_RUNNING
         n.kickoff(task, 20, '000-000-000-000')
         self.assertEqual(mock1.call_count, 1)
-        mock1.assert_any_call('http://192.168.2.183:9090/start/consensus?tc=20&id=000-000-000-000', timeout=0.1)
+        mock1.assert_any_call('http://192.168.2.183:9090/start/consensus?tc=20&id=000-000-000-000', timeout=5)
 
     def test_load_data(self):
         data = n.data_loader('tests/vectors.txt')
@@ -100,5 +101,6 @@ class test_node_runner(unittest.TestCase):
         e = [4, 3, 4, 5, 2, 4, 5, 1, 2, 3, 5, 2, 3, 4]
         for x in range(len(index)):
             self.assertEqual(i[x], index[x])
+
         for y in range(len(edges)):
             self.assertEqual(e[y], edges[y])

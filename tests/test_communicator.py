@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 import json
 import random
 import struct
@@ -10,7 +9,8 @@ import struct
 from unittest.mock import MagicMock, patch
 
 from adac import communicator as comm
-from adac.communicator import Communicator
+from adac.communicator import TCPCommunicator
+from adac.communicator import UDPCommunicator as Communicator
 # from communicator import Communicator
 
 
@@ -36,8 +36,8 @@ class TestCommModuleMethods(unittest.TestCase):
             comm.check_port(prt1)
 
     def test_port_valid(self):
-        self.assertEqual(comm.check_port(8080), True)
-        self.assertEqual(comm.check_port(10000), True)
+        self.assertEqual(comm.check_port(8080), 8080)
+        self.assertEqual(comm.check_port(10000), 10000)
 
 
 class TestCommunicator(unittest.TestCase):
@@ -47,47 +47,29 @@ class TestCommunicator(unittest.TestCase):
         Don't need to close b/c we never actually create an object.
         '''
         with self.assertRaises(ValueError):
-            comm1 = Communicator('uasd', 9090)
-
-        with self.assertRaises(ValueError):
-            comm1 = Communicator('udp', 90000)
+            comm1 = Communicator(90000)
 
         with self.assertRaises(TypeError):
-            comm1 = Communicator('UDP', '123')
+            comm1 = Communicator('123')
 
         with self.assertRaises(ValueError):
-            comm1 = Communicator('udp', -1)
+            comm1 = Communicator(-1)
 
 
     def test_init(self):
 
-        comm1 = Communicator('UDP', 9887)
-        self.assertEqual(comm1.listen_port, 9887)
-        self.assertEqual(comm1.send_port, 9887)
+        comm1 = Communicator(9887)
+        self.assertEqual(comm1.port, 9887)
         self.assertEqual(comm1.is_listening, False)
         self.assertEqual(comm1.listen_thread, None)
-        self.assertEqual(comm1.is_open, True)
-        self.assertEqual(comm1.mtu, comm.get_mtu())
         comm1.close()
 
     def test_close(self):
-        comm1 = Communicator('UDP', 9887)
-        self.assertEqual(comm1.is_open, True)
+        comm1 = Communicator(9887)
         self.assertEqual(comm1.is_listening, False)
-        self.assertNotEqual(comm1.listen_sock, None)
-        self.assertNotEqual(comm1.send_sock, None)
-
         comm1.close()
-        self.assertEqual(comm1.is_open, False)
+
         self.assertEqual(comm1.is_listening, False)
-        self.assertNotEqual(comm1.listen_sock, None)
-        self.assertNotEqual(comm1.send_sock, None)
-
-    def test_double_close(self):
-        comm1 = Communicator('UDP', 9090)
-        comm1.close()
-        with self.assertRaises(BrokenPipeError):
-            comm1.close()
 
     def test_payload(self):
         l = []
@@ -102,7 +84,7 @@ class TestCommunicator(unittest.TestCase):
         l = []
         for i in range(100):
             l.append(i)
-        comm1 = Communicator('UDP', 9090)
+        comm1 = Communicator(9090)
         l = str(l).encode('utf-8')
         p1 = comm1.create_packets(l, '9012'.encode('utf-8'))
         self.assertEqual(len(p1), 1)
@@ -110,7 +92,7 @@ class TestCommunicator(unittest.TestCase):
         comm1.close()
 
     def test_large_packet(self):
-        comm1 = Communicator('udp',10001)
+        comm1 = Communicator(10001)
         d = []
         for i in range(1000):
             d.append(random.random())
@@ -132,7 +114,7 @@ class TestCommunicator(unittest.TestCase):
         comm1.close()
 
     def test_single_packet(self):
-        comm1 = Communicator('udp', 8080)
+        comm1 = Communicator(8080)
         d = []
         for i in range(122): # Exactly 500 bytes
             d.append(i)
@@ -145,18 +127,15 @@ class TestCommunicator(unittest.TestCase):
         comm1.close()
 
     def test_close_ops(self):
-        comm1 = Communicator('UDP', 80)
+        comm1 = Communicator(80)
         comm1.close()
 
-        with self.assertRaises(BrokenPipeError):
-            comm1.listen()
-
-        with self.assertRaises(BrokenPipeError):
-            comm1.send(bytes(), 'lol', 'test')
+        self.assertEqual(comm1.send(bytes(), 'lol'.encode('utf-8'), 'test'.encode('utf-8')), True)
+        comm1.close()
 
     @patch('socket.socket.sendto', side_effect=[1, -1, 5, -1])
     def test_mocked_send(self, mock1):
-        comm1 = Communicator('udp', 10001)
+        comm1 = Communicator(10001)
         self.assertEqual(comm1.send('192.168.1.1', 'ayyy'.encode('utf-8'), 'noice'.encode('utf-8')), True)
         self.assertEqual(comm1.send('192.168.1.1', 'ayyy'.encode('utf-8'), 'noice'.encode('utf-8')), False)
         self.assertEqual(comm1.send('192.168.1.1', 'ayyy'.encode('utf-8'), 'noice'.encode('utf-8')), True)
@@ -166,7 +145,7 @@ class TestCommunicator(unittest.TestCase):
     @patch('socket.socket.sendto', return_value=5)
     def test_big_mock_send(self, mock1):
         l = str(list(range(1000))).encode('utf-8')
-        comm1 = Communicator('udp', 10001)
+        comm1 = Communicator(10001)
         self.assertEqual(comm1.send('abcomm1213', l, 'big_'.encode('utf-8')), True)
         mock1.return_value=-1
         self.assertEqual(comm1.send('abcomm1213', l, 'big_'.encode('utf-8')), False)
@@ -175,7 +154,7 @@ class TestCommunicator(unittest.TestCase):
 
     def test_get(self):
         '''Encodes and decodes a single packet.'''
-        comm1 = Communicator('udp', 10001)
+        comm1 = Communicator(10001)
         l = str(list(range(100))).encode('utf-8')
         for packet in comm1.create_packets(l, '_get'.encode('utf-8')):
             comm1.receive(packet, 'test')
@@ -187,7 +166,7 @@ class TestCommunicator(unittest.TestCase):
     def test_create_large(self):
         '''This test helped to fix a bug where we were accidentally appending an extra blank packet
         when creating packets'''
-        comm1 = Communicator('udp', 10001)
+        comm1 = Communicator(10001)
         l = str(list(range(550))).encode('utf-8')
         packets = comm1.create_packets(l, '_get'.encode('utf-8'))
         self.assertEqual(len(packets), 6)
@@ -197,7 +176,7 @@ class TestCommunicator(unittest.TestCase):
     def test_large_get(self):
         '''This test assures that packets split into multiple pieces and received are able to be
         reassembled corectly.'''
-        comm1 = Communicator('udp', 10001)
+        comm1 = Communicator(10001)
         l = str(list(range(1000))).encode('utf-8')
         packets = comm1.create_packets(l, '_get'.encode('utf-8'))
         for packet in packets:
@@ -215,7 +194,7 @@ class TestCommunicator(unittest.TestCase):
         d += 'test'.encode('utf-8')
         d += l
         mock1.return_value = (d, ('127.0.0.1', 9071))
-        comm1 = Communicator('udp', 9071)
+        comm1 = Communicator(9071)
         comm1.listen()
         self.assertNotEqual(comm1.listen_thread, None)
         self.assertEqual(comm1.is_listening, True)
@@ -234,7 +213,7 @@ class TestCommunicator(unittest.TestCase):
     def test_same_tag_send(self):
 
 
-        comm1 = Communicator('udp', 9071)
+        comm1 = Communicator(9071)
         for i in range(10):
             msg = 'Iteration: {}'.format(i).encode('utf-8')
             packets = comm1.create_packets(msg, 'test'.encode('utf-8'))
@@ -247,7 +226,7 @@ class TestCommunicator(unittest.TestCase):
 
     def test_multi_get(self):
 
-        comm1 = Communicator('udp', 9071)
+        comm1 = Communicator(9071)
         s = bytes(str(range(1000)).encode('utf-8'))
         pkts = comm1.create_packets(s, 'tg11'.encode('utf-8'))
         for pkt in pkts:
@@ -263,7 +242,7 @@ class TestCommunicator(unittest.TestCase):
             return "callback"
         def bck(a, b):
             return "bad"
-        comm1 = Communicator('udp', 9071)
+        comm1 = Communicator(9071)
         comm1.register_recv_callback(cbk)
 
         # Should raise error on non-function
@@ -280,17 +259,17 @@ class TCPCommTest(unittest.TestCase):
 
     def test_constructor(self):
         '''Make sure we can create a TCP object'''
-        comm1 = Communicator('tcp', 8998)
+        comm1 = TCPCommunicator(8998)
         self.assertNotEqual(comm1, None)
         comm1.close()
-        comm1 = Communicator('TCP', 8998)
+        comm1 = TCPCommunicator(8998)
         self.assertNotEqual(comm1, None)
         comm1.close()
 
 
     def test_listen(self):
         '''Make sure the listening thread gets created'''
-        comm1 = Communicator('TCP', 8998)
+        comm1 = TCPCommunicator(8998)
         comm1.listen()
         self.assertEqual(comm1.is_listening, True)
         self.assertNotEqual(comm1.listen_thread, None)
@@ -299,44 +278,42 @@ class TCPCommTest(unittest.TestCase):
         self.assertEqual(comm1.listen_thread, None)
 
     @patch('socket.socket.accept', return_value=(MagicMock(), ('127.0.0.1', 1234)))
-    @patch('adac.communicator.Communicator.__run_connect__', return_value=-1)
+    @patch('adac.communicator.TCPCommunicator._run_connect', return_value=-1)
     def test_run_tcp(self, mock_conn, mock_sock):
         '''Make sure that we create all of our threads'''
-        comm1 = Communicator('TCP', 8998)
-        comm1.is_listening = True
-        thd = threading.Thread(target=comm1.__run_tcp__,
-                               args=(comm1.listen_sock, '0.0.0.0', comm1.listen_port))
-        thd.start()
+        comm1 = TCPCommunicator(8998)
+        comm1.listen()
+        # comm1.is_listening = True
+        # thd = threading.Thread(target=comm1.__run_tcp__,
+        #                        args=(comm1.listen_sock, '0.0.0.0', comm1.listen_port))
+        # thd.start()
         time.sleep(0.1)
         comm1.is_listening = False
-        thd.join()
         self.assertTrue(mock_sock.called)
         self.assertTrue(mock_conn.called)
         self.assertTrue(isinstance(comm1.connections['127.0.0.1'], MagicMock))
         comm1.close()
 
-    @patch('socket.socket.recv',
-           side_effect=[struct.pack('!I', 5), 'hello world'.encode('utf-8'), b''])
-    def test_run_connect(self, mock_recv):
-        '''Make sure that we can receive data'''
-        comm1 = Communicator('TCP', 8998)
-        comm1.connections['127.0.0.1'] = comm1.send_sock
-        comm1.is_listening = True
-        comm1.receive_tcp = MagicMock()
-        comm1.receive_tcp.return_value = -1
-        thd = threading.Thread(target=comm1.__run_connect__, args=(comm1.send_sock, '127.0.0.1'))
-        thd.start()
-        time.sleep(0.1)
-        comm1.is_listening = False
-        thd.join()
-        self.assertTrue(comm1.receive_tcp.called)
-        self.assertTrue(mock_recv.called)
-        self.assertTrue('127.0.0.1' not in comm1.connections)
-        comm1.close()
+    # @patch('socket.socket.recv',
+    #        side_effect=[struct.pack('!I', 5), 'hello world'.encode('utf-8'), b''])
+    # def test_run_connect(self, mock_recv):
+    #     '''Make sure that we can receive data'''
+    #     comm1 = TCPCommunicator(8998)
+    #     comm1.connections['127.0.0.1'] = socket.
+    #     comm1.receive_tcp = MagicMock()
+    #     comm1.receive_tcp.return_value = 100
+    #     comm1.listen()
+    #     comm1.send('127.0.0.1', 'data'.encode('utf-8'), 'tag1'.encode('utf-8'))
+    #     time.sleep(0.1)
+    #     comm1.is_listening = False
+    #     self.assertTrue(comm1.receive_tcp.called)
+    #     self.assertTrue(mock_recv.called)
+    #     self.assertTrue('127.0.0.1' not in comm1.connections)
+    #     comm1.close()
 
     def test_recv_get_tcp(self):
         '''Ensure we can put a packet into the data store'''
-        comm1 = Communicator('TCP', 8998)
+        comm1 = TCPCommunicator(8998)
         tag = 'abcd'.encode('utf-8')[0:4]
         data = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.encode('utf-8')
         pkt = tag + data
@@ -358,14 +335,18 @@ class TCPCommTest(unittest.TestCase):
                 return b'tcp_sock'[:n]
             else:
                 return b'tcp_sock'
+        
         with patch('socket.socket.recv', side_effect=recv):
             _sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             msg = comm.recv_n_bytes(_sock, 5)
             self.assertEqual(msg, b'tcp_s')
             msg = comm.recv_n_bytes(_sock, 25)
             self.assertEqual(msg, (b'tcp_sock'*5)[:25])
-            msg = comm.recv_n_bytes(_sock, -1)
-            self.assertEqual(msg, None)
+
+            with self.assertRaises(ValueError):
+                msg = comm.recv_n_bytes(_sock, -1)
+                self.assertEqual(msg, None)
+                _sock.close()
             _sock.close()
 
         with patch('socket.socket.recv', return_value=struct.pack('!I', 512)):

@@ -1,4 +1,4 @@
-<<<<<<< HEAD
+
 '''Run with flask as an HTTP server to communicate starting points of CloudK-SVD and Consensus
 '''
 import json
@@ -115,10 +115,10 @@ def get_indexAndEdges():
         for j in range (len(graph[i])):
             if graph[i][j]==1:
                 if i != j:
-                    edges.append(j)
+                    edges.append(j+1)
                     index_count += 1
         index.append(index_count)
-        if edges ==[]:
+        if edges == []:
             edges.append(1)
     return index, edges
 
