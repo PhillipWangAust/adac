@@ -1,21 +1,26 @@
 #! /usr/bin/env python3
+import os
 import json
 import requests
 import sys
 import time
+
+activator = os.path.dirname(os.path.realpath(__file__)) + '/env/bin/activate_this.py'
+with open(activator) as f:
+    exec(f.read(), {'__file__':activator})
+
 import adac.util as u
 
 username = 'pi'
-data_loc = '/home/pi/adac/data.txt'
-hosts = ['192.168.2.177',
-         '192.168.2.178',
-         '192.168.2.180',
-         '192.168.2.181',
-         '192.168.2.182',
-         '192.168.2.183',
-         '192.168.2.184']
+data_loc = './data.txt'
+hosts = ['10.0.0.1',
+         '10.0.0.2',
+         '10.0.0.3',
+         '10.0.0.4',
+         '10.0.0.5',
+         '10.0.0.6',]
 
-args = [ 'test', 'start', 'kill', 'restart', 'code', 'params', 'vector', 'wait']
+args = [ 'test', 'start', 'kill', 'restart', 'code', 'params', 'vector', 'gen', 'wait']
 
 def kill_sessions():
     '''Kill the any tmux sessions running consensus server'''
@@ -66,6 +71,13 @@ if __name__ == "__main__":
             print("Updating params files")
             for host in hosts:
                 u.distcp(username, host, "params.conf", "/home/pi/adac/params.conf")
+        elif arg == 'gen':
+            print("generating random vector")
+            vec = u.generate_vec(50)
+            print(vec)
+            with open('data.txt', 'w') as f:
+                f.write(' '.join([str(x) for x in vec]))
+                f.write('\n')
         elif arg == 'vector':
             avg_vec, vecs = (u.generate_data(username, hosts, data_loc, 50))
             with open('avg_data.txt', 'w') as f:

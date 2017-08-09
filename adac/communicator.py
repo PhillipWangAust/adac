@@ -37,6 +37,9 @@ def get_mtu():
     '''
     return 576
 
+def default_log_callback(sender, tag, data):
+    logger.error('MESSAGE from {}; TAG {}; DATA {}'.format(sender, tag, data))
+
 
 def check_port(port):
     '''Checks if a port is valid.
@@ -57,6 +60,28 @@ def check_port(port):
         raise ValueError("port must be between 0 and 65535")
     else:
         return port
+
+
+def check_tag(input_tag):
+    '''Checks if a tag is valid. Automatically tries to convert tag from string
+
+    Converts the argument to a bytes object and returns the first 4 bytes of the object.
+
+    Args:
+        input_tag (int/bytes/str): The input tag to check/convert
+    Returns:
+        bytes: A 4 byte identifier.
+
+    '''
+    if isinstance(input_tag, str):
+        input_tag = input_tag.encode('utf-8')
+    elif isinstance(input_tag, int):
+        input_tag = bytes(input_tag)
+
+    if len(input_tag) < 4:
+        raise ValueError("Tag must be at least 4 bytes long")
+    
+    return input_tag[0:4]
 
 
 def get_payload(payload):
@@ -108,7 +133,7 @@ def build_meta_packet(seq_num, seq_total, tag):
     packet = bytearray()
     packet += struct.pack('H', seq_total)
     packet += struct.pack('H', seq_num)
-    packet += tag[0:4]
+    packet += check_tag(tag)
     return packet
 
 def recv_n_bytes(conn, num):
@@ -128,7 +153,7 @@ def recv_n_bytes(conn, num):
     while len(msg_b) < num:
         try:
             bts = conn.recv(bytes_left)
-            if len(bts) == 0:
+            if len(bts) <= 0: # error/socket close
                 return None
                 # break  # Empty str means closed socket
             msg_b += bts
@@ -210,7 +235,7 @@ class BaseCommunicator(object):
 
         '''
         data = None
-        tg_int = int.from_bytes(tag, byteorder='little')
+        tg_int = int.from_bytes(check_tag(tag), byteorder='little')
         if ip_addr not in self.data_store:
             data = None
         elif tg_int not in self.data_store[ip_addr]:
@@ -259,18 +284,18 @@ class TCPCommunicator(BaseCommunicator):
         super().__init__(port)
 
     def connect(self, ip_addr, timeout=None):
-        '''Connect to a TCP socket at ip_addr using the send_port.
+        '''Connect to a TCP socket at ``ip_addr:self.port``.
 
         The connection of addr will be put into the internal connections dictionary. When the next
-        tcp_send call is initiated a new thread will start reading messages from the connection
+        send call is initiated a new thread will start reading messages from the connection
 
         The call will block until timeout seconds have passed. A socket.TimeoutError will be
         raised if the connection is not successful. Otherwise if timeout is None the call
         will block indefinitely until a connection has been made.
 
         Args:
-            ip_addr (str): The IP to connect to on self.send_port
-            timeout (float): Number of seconds to wait before timing out the connection.
+            ip_addr (str): The IP to connect to on self.port
+            timeout (float): Number of seconds to wait before timing out the connection. None indicates no timeout
 
         Returns: N/A
         '''
@@ -325,15 +350,12 @@ class TCPCommunicator(BaseCommunicator):
             tag (bytes): Message identifier. Will take up to first 4 bytes
 
         '''
-        if not isinstance(tag, bytes):
-            raise TypeError("tag must be bytes")
+        tag = check_tag(tag)
         if not isinstance(data, bytes):
             raise TypeError("data must be bytes")
-        if len(tag) < 4:
-            raise ValueError("tag must be at least 4 bytes")
         # Create the packet with tag at the top
         msg = bytearray()
-        msg += tag[0:4]
+        msg += tag
         msg += data
         mlen = len(msg) # msg length
         msg = struct.pack('!I', mlen) + msg # prepend message length to data
@@ -366,17 +388,15 @@ class TCPCommunicator(BaseCommunicator):
         except BaseException as err:
             logger.debug('exception closing listening socket: %s', err)
 
-        self.conn_lock.acquire()
-        for addr in self.connections:
-            try:
-                self.connections[addr].close()
-            except BaseException as err:
-                logger.debug('Closing %s, Error: %s', addr, err)
+        with self.conn_lock:
+            for addr in self.connections:
+                try:
+                    self.connections[addr].close()
+                except BaseException as err:
+                    logger.debug('Closing %s, Error: %s', addr, err)
         self.connections = {}
-        self.conn_lock.release()
-        # raise NotImplementedError("Can't use BaseCommunicator. Use UDP or TCP.")
 
-    def _run_tcp(self, _sock, host, port):
+    def _run_tcp(self, _sock, host, port, unacc_conn=10):
         '''Method which accepts TCP connections and passes them off to run_connect
 
         Args:
@@ -388,7 +408,7 @@ class TCPCommunicator(BaseCommunicator):
         _sock.settimeout(1.5)
         _sock.bind((host, port))
         # Accept maximum of three un-accepted conns before refusing
-        _sock.listen(3)
+        _sock.listen(unacc_conn)
         while self.is_listening:
             try:
                 conn, addr = _sock.accept()
@@ -409,7 +429,7 @@ class TCPCommunicator(BaseCommunicator):
         logger.debug('Listening thread exiting')
 
     def _run_connect(self, connection, addr):
-        '''Worker methods which receive data from TCP connections.
+        '''Worker methods which receives data from TCP connections.
 
         Must be able to convert TCP byte streams into individual messages. In order to accomplish
         this we used a message-length prefixing strategy. Every message sent from the other end of
@@ -422,13 +442,13 @@ class TCPCommunicator(BaseCommunicator):
             addr (str): The Inet(6) address representing the address of the client
         '''
 
-        while self.is_listening:
+        while self.is_listening: # A break from this loop indicated the connection closed
             try:
                 # Get message length
                 len_b = recv_n_bytes(connection, 4)
                 if len_b is None:
                     break
-                m_len = struct.unpack('!I', len_b)[0]
+                m_len = struct.unpack('!I', len_b)[0] # Get the next message length
                 if m_len < 0:
                     # Log an error, close connection
                     logger.warning("msg len < 0")
@@ -447,7 +467,7 @@ class TCPCommunicator(BaseCommunicator):
                 break
 
         self.conn_lock.acquire()
-        self.connections.pop(addr, None)  # Remove the connection
+        del self.connections[addr]  # Remove the connection
         logger.debug("Popped connection with addr %s", addr)
         self.conn_lock.release()
         try:
@@ -470,11 +490,10 @@ class TCPCommunicator(BaseCommunicator):
         data_tag = int.from_bytes(data[:4], byteorder='little')
         dat = data[4:]
 
-        self.data_lock.acquire()
-        if addr not in self.data_store:
-            self.data_store[addr] = {}
-        self.data_store[addr][data_tag] = dat
-        self.data_lock.release()
+        with self.data_lock:
+            if addr not in self.data_store:
+                self.data_store[addr] = {}
+            self.data_store[addr][data_tag] = dat
         logger.debug('Stored data at [%s][%s]', addr, data_tag)
         if self.recv_callback != None:
             # run a callback on the newly collected data.
@@ -485,11 +504,11 @@ class TCPCommunicator(BaseCommunicator):
         '''Perform an attempt at sending data to the specified address
 
         First we check if we can access the connection in our current connections list.
+        Then if it exists, we send it or find a new
 
         Args:
-            add (str): The IP address to send to
+            addr (str): The IP address to send to
             msg (bytes): The message in bytes to send
-            timeout (i)
         '''
         with self.conn_lock:
             if addr in self.connections:
@@ -743,12 +762,9 @@ class UDPCommunicator(BaseCommunicator):
         Returns:
             bool: True if all packets were created and sent successfully.
         '''
-        if not isinstance(tag, bytes):
-            raise TypeError("tag must be bytes")
+        tag = check_tag(tag)
         if not isinstance(data, bytes):
             raise TypeError("data must be bytes")
-        if len(tag) < 4:
-            raise ValueError("tag must be at least 4 bytes")
 
         if self.send_sock is None:
             self.send_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)

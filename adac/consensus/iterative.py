@@ -171,7 +171,7 @@ def transmit(data, tag, neighbors, communicator):
     else:
         for n in neighbors:
             logger.debug('Consensus transmitting data to neighbor {} with tag {}'.format(n, tag))
-            communicator.tcp_send(n, data, tag)
+            communicator.send(n, data, tag)
 
 
 def receive(tag, neighbors, communicator):

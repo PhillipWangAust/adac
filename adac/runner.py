@@ -3,6 +3,7 @@
 '''
 import json
 import logging
+import os
 import sys
 import traceback
 import uuid
@@ -182,7 +183,10 @@ def post_message(msg):
     conf = ConfigParser()
     conf.read(CONF_FILE)
     url = conf['collector']['url'] + '/message'
-    requests.post(url, json={ 'message': msg })
+    try:
+        requests.post(url, json={ 'message': msg })
+    except:
+        logger.warn("Could not post message to {}".format(url))
 
 def kickoff(task, tc, consensus_id):
     '''The worker method for running distributed consensus.
@@ -209,6 +213,7 @@ def kickoff(task, tc, consensus_id):
         post_url = config['collector']['url']
         logger.debug('Attempting to tell all other nodes in my vicinity to start')
         neighs = get_neighbors()
+        logger.info("Myneighs: {}".format(neighs))
         if neighs is None:
             logger.warning("No neighbors found - consensus finished")
         else:
@@ -289,6 +294,7 @@ def kickoff(task, tc, consensus_id):
         c.close()
 
     try:
+        logger.debug("attempting to send logs")
         if finished_consensus == False:
             raise BaseException("Consensus did not finish - not sending logs.")
         logger.debug('parsing and sending logs as json')
@@ -330,6 +336,7 @@ def kickoff(task, tc, consensus_id):
         post_message(message)
     del c
     with task.get_lock():
+        logger.debug("set task value to 0")
         task.value = 0
 
 

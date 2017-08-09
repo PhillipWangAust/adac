@@ -7,11 +7,19 @@ import sys
 import subprocess
 import random
 USER = 'pi'
-HOSTS = ['192.168.2.180',
-         '192.168.2.181',
-         '192.168.2.182',
-         '192.168.2.184',
-         '192.168.2.185']
+HOSTS = ['10.0.0.1',
+         '10.0.0.2',
+         '10.0.0.3',
+         '10.0.0.4',
+         '10.0.0.5',
+         '10.0.0.6']
+
+def generate_vec(vec_size, seed=None):
+    random.seed(seed)
+    v = []
+    for i in range(vec_size):
+        v.append(random.randint(0, 250))
+    return v
 
 def generate_data(user, machines, remote_loc, vec_size, seed=None):
     '''Generate and distribute random vectors to use for consensus machines is the list of host
@@ -26,11 +34,8 @@ def generate_data(user, machines, remote_loc, vec_size, seed=None):
 
     # generate the random vectors
     for host in machines:
-        vectors[host] = []
-        for i in range(vec_size):
-            vectors[host].append(random.randint(0, 250))
-            avg_vec[i] += vectors[host][i]
-
+        vectors[host] = generate_vec(vec_size, seed)
+        avg_vec = [avg_vec[x] + vectors[host][x] for x in range(vectors[host])]
         run(user, host, ['echo "{}" > {}'.format(' '.join([str(x) for x in vectors[host]]), remote_loc)])
 
     avg_vec = [x/len(machines) for x in avg_vec]
